@@ -23,11 +23,18 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 ```sh
 bash Scripts/build_app.sh release     # → build/Plume.app
 open build/Plume.app
+
+bash Scripts/make_dmg.sh release       # → build/Plume.dmg (drag-to-install)
+bash Scripts/make_icon.sh              # regenerate Resources/Plume.icns
 ```
 
-Requires Xcode command-line tools (Swift 6). The script compiles with
-SwiftPM, assembles the `.app` bundle with an `Info.plist`, and ad-hoc
-signs it (needed for notifications and camera/mic TCC prompts).
+Requires Xcode command-line tools (Swift 6). `build_app.sh` compiles with
+SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
+ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
+`make_dmg.sh` wraps that into a compressed DMG with an `/Applications`
+symlink. The icon — a feather on a blue→indigo gradient — is drawn
+programmatically by `Scripts/icon_gen.swift`; rerun `make_icon.sh` only when
+the design changes (the committed `Resources/Plume.icns` is used otherwise).
 
 ## Architecture
 
@@ -53,4 +60,4 @@ of scope for v1.
 - [ ] Phase 2: Rust content-filtering proxy (tracker/ad stripping)
 - [ ] Custom dark-mode / compact-density CSS toggles
 - [ ] Per-account profiles (multiple `WKWebsiteDataStore`s)
-- [ ] App icon + DMG packaging
+- [x] App icon + DMG packaging

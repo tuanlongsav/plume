@@ -20,6 +20,13 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
 
+ICON_SRC="$ROOT/Resources/Plume.icns"
+if [[ -f "$ICON_SRC" ]]; then
+    cp "$ICON_SRC" "$APP/Contents/Resources/Plume.icns"
+else
+    echo "  (no Resources/Plume.icns — run Scripts/make_icon.sh to generate it)"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,6 +36,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>      <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>      <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>        <string>Plume</string>
+    <key>CFBundleIconName</key>        <string>Plume</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>0.1.0</string>
     <key>CFBundleVersion</key>         <string>1</string>
