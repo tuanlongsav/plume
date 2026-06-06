@@ -16,10 +16,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         window.title = "Plume"
         window.contentViewController = controller
-        window.setFrameAutosaveName("PlumeMainWindow")   // remember size/position
         window.minSize = NSSize(width: 420, height: 520)
+        window.setFrameAutosaveName("PlumeMainWindow")   // remember size/position
         window.titlebarAppearsTransparent = false
-        window.center()
+
+        // Guard against a corrupt or degenerate saved frame. A frame smaller
+        // than minSize (a 1×1 frame has been observed) leaves the window
+        // invisible; fall back to the default size, centered on screen.
+        if window.frame.width < window.minSize.width ||
+            window.frame.height < window.minSize.height {
+            window.setContentSize(NSSize(width: 1100, height: 760))
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         buildMenu()
