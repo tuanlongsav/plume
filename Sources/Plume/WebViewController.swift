@@ -4,9 +4,23 @@ import UserNotifications
 
 /// Owns the WKWebView that renders Messenger and wires up the native
 /// integrations: notifications, badge, external-link handling, file
-/// uploads and camera/mic for calls.
+/// uploads and camera/mic for calls. Also drives the redesign's app-state
+/// overlays (splash / loading / offline) and the tầng-B CSS theming.
 final class WebViewController: NSViewController {
     private(set) var webView: WKWebView!
+
+    // App-state overlays
+    private var splashView: SplashView!
+    private var loadingView: LoadingView!
+    private var offlineView: OfflineView!
+
+    /// Mutually-exclusive opaque backdrop.
+    private enum ContentState { case splash, main, offline }
+    private var contentState: ContentState = .splash
+    private var hasLoadedOnce = false
+
+    /// Toolbar refreshes its button states through this after any nav change.
+    var onChromeUpdate: (() -> Void)?
 
     override func loadView() {
         let config = WKWebViewConfiguration()
@@ -21,9 +35,11 @@ final class WebViewController: NSViewController {
             forMainFrameOnly: false
         )
         controller.addUserScript(script)
-        controller.add(ScriptBridge(self), name: "notify")
-        controller.add(ScriptBridge(self), name: "notifyClose")
-        controller.add(ScriptBridge(self), name: "badge")
+        // One bridge handles every channel; the content controller retains it
+        // while the bridge only weakly references us, so there is no cycle.
+        let bridge = ScriptBridge(self)
+        controller.add(bridge, name: "notify")
+        controller.add(bridge, name: "notifyClose")
         config.userContentController = controller
 
         // Let HTML5 audio/video (call ringtones, voice clips) autoplay.
@@ -40,21 +56,93 @@ final class WebViewController: NSViewController {
         wv.navigationDelegate = self
         wv.uiDelegate = self
         wv.setValue(false, forKey: "drawsBackground") // avoid white flash on load
+        wv.translatesAutoresizingMaskIntoConstraints = false
 
         // KVO the title to keep the dock badge in sync as a fallback.
         wv.addObserver(self, forKeyPath: #keyPath(WKWebView.title), options: .new, context: nil)
-
         self.webView = wv
-        self.view = wv
+
+        // Container: web view + state overlays stacked on top.
+        let container = NSView()
+        container.wantsLayer = true
+        container.addSubview(wv)
+
+        offlineView = OfflineView()
+        offlineView.onRetry = { [weak self] in self?.retry() }
+        splashView = SplashView()
+        loadingView = LoadingView()
+        let overlays: [NSView] = [offlineView, splashView, loadingView]
+        for overlay in overlays {
+            container.addSubview(overlay)
+            overlay.isHidden = true
+        }
+
+        NSLayoutConstraint.activate([
+            wv.topAnchor.constraint(equalTo: container.topAnchor),
+            wv.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            wv.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            wv.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ] + overlays.flatMap { pinEdges($0, to: container) })
+
+        self.view = container
+        setContentState(.splash)   // no blank flash before the first paint
+    }
+
+    private func pinEdges(_ v: NSView, to c: NSView) -> [NSLayoutConstraint] {
+        [v.topAnchor.constraint(equalTo: c.topAnchor),
+         v.leadingAnchor.constraint(equalTo: c.leadingAnchor),
+         v.trailingAnchor.constraint(equalTo: c.trailingAnchor),
+         v.bottomAnchor.constraint(equalTo: c.bottomAnchor)]
     }
 
     func load() {
         webView.load(URLRequest(url: Plume.homeURL))
     }
 
+    // MARK: Chrome actions
+
     func reload() { webView.reload() }
     func goBack() { if webView.canGoBack { webView.goBack() } }
     func goForward() { if webView.canGoForward { webView.goForward() } }
+    func retry() { load() }
+
+    var canGoBack: Bool { webView.canGoBack }
+    var canGoForward: Bool { webView.canGoForward }
+
+    // Dark: force the native appearance (web content follows via
+    // prefers-color-scheme). Toggling flips between forcing dark and light.
+    var isDark: Bool { NSApp.effectiveAppearance.isDark }
+    func toggleDark() {
+        Preferences.forceDark = isDark ? false : true
+        WebViewController.applyAppearance()
+        onChromeUpdate?()
+    }
+    static func applyAppearance() {
+        switch Preferences.forceDark {
+        case .some(true):  NSApp.appearance = NSAppearance(named: .darkAqua)
+        case .some(false): NSApp.appearance = NSAppearance(named: .aqua)
+        case .none:        NSApp.appearance = nil
+        }
+    }
+    func followSystemAppearance() {
+        Preferences.forceDark = nil
+        WebViewController.applyAppearance()
+        onChromeUpdate?()
+    }
+
+    var isCompact: Bool { Preferences.compact }
+    func toggleCompact() {
+        Preferences.compact.toggle()
+        applyDensity()
+        onChromeUpdate?()
+    }
+
+    var isAccentOn: Bool { Preferences.accent }
+    func toggleAccent() {
+        Preferences.accent.toggle()
+        applyAccent()
+        onChromeUpdate?()
+    }
 
     deinit {
         webView?.removeObserver(self, forKeyPath: #keyPath(WKWebView.title))
@@ -67,23 +155,76 @@ final class WebViewController: NSViewController {
         }
     }
 
+    // MARK: Badge
+
     private func updateBadgeFromTitle(_ title: String?) {
-        guard let title, let range = title.range(of: #"\((\d+)\)"#, options: .regularExpression) else {
-            setBadge(0); return
-        }
-        let digits = title[range].filter(\.isNumber)
-        setBadge(Int(digits) ?? 0)
+        setBadge(Self.unreadCount(from: title))
     }
 
+    // Messenger encodes the unread count as a leading "(N)" in the page title,
+    // e.g. "(3) Messenger". Scan for it directly instead of compiling a regex
+    // on every title change.
+    static func unreadCount(from title: String?) -> Int {
+        guard let title,
+              let open = title.firstIndex(of: "("),
+              let close = title[title.index(after: open)...].firstIndex(of: ")")
+        else { return 0 }
+        let digits = title[title.index(after: open)..<close].filter(\.isNumber)
+        return Int(digits) ?? 0
+    }
+
+    // Called on the main thread (from title KVO); no dispatch needed.
     func setBadge(_ count: Int) {
-        DispatchQueue.main.async {
-            NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
-        }
+        NSApp.dockTile.badgeLabel = count > 99 ? "99+" : (count > 0 ? String(count) : nil)
     }
 
     // Reopen the thread tied to a clicked native notification.
     func activateNotification(id: Int) {
         webView.evaluateJavaScript("window.__plumeActivateNotification(\(id))", completionHandler: nil)
+    }
+
+    // MARK: App-state overlays
+
+    private func setContentState(_ state: ContentState) {
+        contentState = state
+        splashView.isHidden = state != .splash
+        offlineView.isHidden = state != .offline
+        if state == .splash { splashView.startAnimating() } else { splashView.stopAnimating() }
+        webView.setValue(state == .main, forKey: "drawsBackground")
+    }
+
+    private func setLoading(_ on: Bool) {
+        loadingView.isHidden = !on
+        if on { loadingView.startAnimating() } else { loadingView.stopAnimating() }
+    }
+
+    // MARK: Tầng-B CSS theming
+
+    /// Apply base + current toggle state. Called once each successful load.
+    private func applyWebTheme() {
+        setWebStyle(InjectedScript.StyleID.base, InjectedScript.baseCSS)
+        applyDensity()
+        applyAccent()
+    }
+    private func applyDensity() {
+        if Preferences.compact { setWebStyle(InjectedScript.StyleID.density, InjectedScript.densityCSS) }
+        else { removeWebStyle(InjectedScript.StyleID.density) }
+    }
+    private func applyAccent() {
+        if Preferences.accent { setWebStyle(InjectedScript.StyleID.accent, InjectedScript.accentCSS) }
+        else { removeWebStyle(InjectedScript.StyleID.accent) }
+    }
+    private func setWebStyle(_ id: String, _ css: String) {
+        guard let idJSON = jsonString(id), let cssJSON = jsonString(css) else { return }
+        webView.evaluateJavaScript("window.__plumeSetStyle(\(idJSON), \(cssJSON))", completionHandler: nil)
+    }
+    private func removeWebStyle(_ id: String) {
+        guard let idJSON = jsonString(id) else { return }
+        webView.evaluateJavaScript("window.__plumeRemoveStyle(\(idJSON))", completionHandler: nil)
+    }
+    private func jsonString(_ s: String) -> String? {
+        guard let data = try? JSONEncoder().encode(s) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
 
@@ -114,10 +255,6 @@ extension WebViewController {
         UNUserNotificationCenter.current()
             .removeDeliveredNotifications(withIdentifiers: ["plume-\(id)"])
     }
-
-    func handleBadge(_ body: [String: Any]) {
-        if let count = body["count"] as? Int { setBadge(count) }
-    }
 }
 
 // MARK: - Navigation
@@ -143,9 +280,46 @@ extension WebViewController: WKNavigationDelegate {
         decisionHandler(.allow)
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // First paint is covered by the splash; later navigations (reload /
+        // retry) get the non-blocking loading overlay.
+        if hasLoadedOnce { setLoading(true) }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Once content is up, draw the background again to match the page.
-        webView.setValue(true, forKey: "drawsBackground")
+        hasLoadedOnce = true
+        setContentState(.main)
+        setLoading(false)
+        applyWebTheme()
+        onChromeUpdate?()
+    }
+
+    // A failed *provisional* load (DNS/offline/TLS before any content).
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                 withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    // A failure after content started committing.
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
+                 withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        // The user cancelling a navigation (e.g. clicking a link we hand off
+        // to the browser) is not a failure worth reacting to.
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        setLoading(false)
+        setContentState(.offline)
+        onChromeUpdate?()
+        // Auto-retry: if still offline the retry fails and reschedules, so the
+        // app self-heals when connectivity returns. The loading pill appears
+        // over the offline screen once the retry navigation starts.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.contentState == .offline else { return }
+            self.load()
+        }
     }
 }
 
@@ -182,13 +356,15 @@ extension WebViewController: WKUIDelegate {
     }
 
     // Grant camera/mic so voice & video calls work without a second prompt
-    // (macOS still gates the real hardware behind its own TCC prompt).
+    // (macOS still gates the real hardware behind its own TCC prompt) — but
+    // only for Messenger/Facebook itself. A third-party frame gets the normal
+    // WebKit prompt instead of a silent grant.
     func webView(_ webView: WKWebView,
                  requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(.grant)
+        decisionHandler(Plume.isInternal(host: origin.host) ? .grant : .prompt)
     }
 }
 
@@ -204,7 +380,6 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         switch message.name {
         case "notify":      controller?.handleNotify(body)
         case "notifyClose": controller?.handleNotifyClose(body)
-        case "badge":       controller?.handleBadge(body)
         default: break
         }
     }

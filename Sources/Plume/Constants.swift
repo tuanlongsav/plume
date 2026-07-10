@@ -26,9 +26,16 @@ enum Plume {
     ]
 
     static func isInternal(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
+        guard let host = url.host else { return false }
+        return isInternal(host: host)
+    }
+
+    /// Host-based membership test. Accepts the exact host or any subdomain of
+    /// a registrable domain in `internalHosts`; the leading dot keeps
+    /// look-alikes like `evilmessenger.com` out.
+    static func isInternal(host: String) -> Bool {
+        let host = host.lowercased()
         if internalHosts.contains(host) { return true }
-        // match subdomains of the registrable domains above
-        return internalHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+        return internalHosts.contains { host.hasSuffix("." + $0) }
     }
 }

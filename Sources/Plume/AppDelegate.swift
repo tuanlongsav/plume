@@ -1,16 +1,21 @@
 import AppKit
 import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var controller: WebViewController!
 
+    private var chrome: ChromeToolbar!
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore the saved appearance override before any window shows.
+        WebViewController.applyAppearance()
+
         controller = WebViewController()
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -18,7 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentViewController = controller
         window.minSize = NSSize(width: 420, height: 520)
         window.setFrameAutosaveName("PlumeMainWindow")   // remember size/position
-        window.titlebarAppearsTransparent = false
+
+        // Native unified-toolbar chrome (vibrancy header + traffic lights).
+        chrome = ChromeToolbar(controller: controller)
+        window.toolbar = chrome.toolbar
+        window.toolbarStyle = .unified
+        window.titleVisibility = .visible
+        window.toolbar?.isVisible = Preferences.toolbarVisible   // zero-chrome if off
+        controller.onChromeUpdate = { [weak chrome] in chrome?.refresh() }
+        chrome.refresh()
 
         // Guard against a corrupt or degenerate saved frame. A frame smaller
         // than minSize (a 1×1 frame has been observed) leaves the window
@@ -77,6 +90,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func goBack() { controller.goBack() }
     @objc private func goForward() { controller.goForward() }
 
+    @objc private func toggleDark() { controller.toggleDark() }
+    @objc private func followSystem() { controller.followSystemAppearance() }
+    @objc private func toggleCompact() { controller.toggleCompact() }
+    @objc private func toggleAccent() { controller.toggleAccent() }
+    @objc private func toggleChrome() {
+        let visible = !(window.toolbar?.isVisible ?? true)
+        window.toolbar?.isVisible = visible
+        Preferences.toolbarVisible = visible
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(toggleDark):    item.state = controller.isDark ? .on : .off
+        case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
+        case #selector(toggleAccent):  item.state = controller.isAccentOn ? .on : .off
+        case #selector(toggleChrome):
+            item.title = (window.toolbar?.isVisible ?? true) ? "Hide Toolbar" : "Show Toolbar"
+        default: break
+        }
+        return true
+    }
+
     private func buildMenu() {
         let mainMenu = NSMenu()
 
@@ -121,6 +156,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         viewMenu.addItem(.separator())
         let fullScreen = viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
+
+        // Appearance / theming toggles (mirror the toolbar).
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Dark Mode", action: #selector(toggleDark), keyEquivalent: "d").target = self
+        viewMenu.addItem(withTitle: "Follow System Appearance", action: #selector(followSystem), keyEquivalent: "").target = self
+        let compact = viewMenu.addItem(withTitle: "Compact Density", action: #selector(toggleCompact), keyEquivalent: "d")
+        compact.keyEquivalentModifierMask = [.command, .shift]
+        compact.target = self
+        viewMenu.addItem(withTitle: "Plume Accent", action: #selector(toggleAccent), keyEquivalent: "").target = self
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Hide Toolbar", action: #selector(toggleChrome), keyEquivalent: "t").target = self
 
         // Window menu
         let windowItem = NSMenuItem()
