@@ -34,8 +34,23 @@ enum Plume {
     /// a registrable domain in `internalHosts`; the leading dot keeps
     /// look-alikes like `evilmessenger.com` out.
     static func isInternal(host: String) -> Bool {
+        matches(host, in: internalHosts)
+    }
+
+    /// Origins allowed to *silently* obtain camera/mic for calls. Deliberately
+    /// narrower than `internalHosts`: only the app surfaces that actually place
+    /// calls. A CDN such as `fbcdn.net` never needs capture, so auto-granting
+    /// it would be needlessly broad — those origins fall through to the normal
+    /// WebKit prompt instead.
+    static let callHosts: Set<String> = ["messenger.com", "facebook.com"]
+
+    static func isCallOrigin(host: String) -> Bool {
+        matches(host, in: callHosts)
+    }
+
+    private static func matches(_ host: String, in hosts: Set<String>) -> Bool {
         let host = host.lowercased()
-        if internalHosts.contains(host) { return true }
-        return internalHosts.contains { host.hasSuffix("." + $0) }
+        if hosts.contains(host) { return true }
+        return hosts.contains { host.hasSuffix("." + $0) }
     }
 }

@@ -19,6 +19,10 @@ final class WebViewController: NSViewController {
     private var contentState: ContentState = .splash
     private var hasLoadedOnce = false
 
+    /// Single in-flight auto-retry, cancellable so a manual retry or a
+    /// successful load can't leave a stale reload queued behind it.
+    private var pendingRetry: DispatchWorkItem?
+
     /// Toolbar refreshes its button states through this after any nav change.
     var onChromeUpdate: (() -> Void)?
 
@@ -104,7 +108,13 @@ final class WebViewController: NSViewController {
     func reload() { webView.reload() }
     func goBack() { if webView.canGoBack { webView.goBack() } }
     func goForward() { if webView.canGoForward { webView.goForward() } }
-    func retry() { load() }
+
+    /// Manual retry: drop any queued auto-retry so we don't fire twice.
+    func retry() {
+        pendingRetry?.cancel()
+        pendingRetry = nil
+        load()
+    }
 
     var canGoBack: Bool { webView.canGoBack }
     var canGoForward: Bool { webView.canGoForward }
@@ -144,6 +154,13 @@ final class WebViewController: NSViewController {
         onChromeUpdate?()
     }
 
+    var isWebStyling: Bool { Preferences.webStyling }
+    func toggleWebStyling() {
+        Preferences.webStyling.toggle()
+        applyWebTheme()
+        onChromeUpdate?()
+    }
+
     deinit {
         webView?.removeObserver(self, forKeyPath: #keyPath(WKWebView.title))
     }
@@ -161,16 +178,17 @@ final class WebViewController: NSViewController {
         setBadge(Self.unreadCount(from: title))
     }
 
-    // Messenger encodes the unread count as a leading "(N)" in the page title,
-    // e.g. "(3) Messenger". Scan for it directly instead of compiling a regex
-    // on every title change.
+    // Messenger encodes the unread count as a *leading* "(N)" in the page
+    // title, e.g. "(3) Messenger". Anchor on that: the title must start with
+    // "(" and the parenthesised run must be all digits — so unrelated
+    // parentheses ("Messenger (Work)") never register as unread.
     static func unreadCount(from title: String?) -> Int {
-        guard let title,
-              let open = title.firstIndex(of: "("),
-              let close = title[title.index(after: open)...].firstIndex(of: ")")
+        guard let title, title.hasPrefix("("),
+              let close = title.firstIndex(of: ")")
         else { return 0 }
-        let digits = title[title.index(after: open)..<close].filter(\.isNumber)
-        return Int(digits) ?? 0
+        let inside = title[title.index(after: title.startIndex)..<close]
+        guard !inside.isEmpty, inside.allSatisfy(\.isNumber) else { return 0 }
+        return Int(inside) ?? 0
     }
 
     // Called on the main thread (from title KVO); no dispatch needed.
@@ -201,18 +219,31 @@ final class WebViewController: NSViewController {
     // MARK: Tầng-B CSS theming
 
     /// Apply base + current toggle state. Called once each successful load.
+    /// The master `webStyling` switch strips every layer when off.
     private func applyWebTheme() {
+        guard Preferences.webStyling else {
+            removeWebStyle(InjectedScript.StyleID.base)
+            removeWebStyle(InjectedScript.StyleID.density)
+            removeWebStyle(InjectedScript.StyleID.accent)
+            return
+        }
         setWebStyle(InjectedScript.StyleID.base, InjectedScript.baseCSS)
         applyDensity()
         applyAccent()
     }
     private func applyDensity() {
-        if Preferences.compact { setWebStyle(InjectedScript.StyleID.density, InjectedScript.densityCSS) }
-        else { removeWebStyle(InjectedScript.StyleID.density) }
+        if Preferences.webStyling, Preferences.compact {
+            setWebStyle(InjectedScript.StyleID.density, InjectedScript.densityCSS)
+        } else {
+            removeWebStyle(InjectedScript.StyleID.density)
+        }
     }
     private func applyAccent() {
-        if Preferences.accent { setWebStyle(InjectedScript.StyleID.accent, InjectedScript.accentCSS) }
-        else { removeWebStyle(InjectedScript.StyleID.accent) }
+        if Preferences.webStyling, Preferences.accent {
+            setWebStyle(InjectedScript.StyleID.accent, InjectedScript.accentCSS)
+        } else {
+            removeWebStyle(InjectedScript.StyleID.accent)
+        }
     }
     private func setWebStyle(_ id: String, _ css: String) {
         guard let idJSON = jsonString(id), let cssJSON = jsonString(css) else { return }
@@ -287,6 +318,8 @@ extension WebViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        pendingRetry?.cancel()
+        pendingRetry = nil
         hasLoadedOnce = true
         setContentState(.main)
         setLoading(false)
@@ -313,13 +346,21 @@ extension WebViewController: WKNavigationDelegate {
         setLoading(false)
         setContentState(.offline)
         onChromeUpdate?()
-        // Auto-retry: if still offline the retry fails and reschedules, so the
-        // app self-heals when connectivity returns. The loading pill appears
-        // over the offline screen once the retry navigation starts.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        scheduleAutoRetry()
+    }
+
+    /// Queue a single retry ~3s out. If still offline it fails and reschedules,
+    /// so the app self-heals when connectivity returns; the loading pill shows
+    /// over the offline screen once the retry navigation starts. Replacing any
+    /// prior work item keeps exactly one retry in flight.
+    private func scheduleAutoRetry() {
+        pendingRetry?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             guard let self, self.contentState == .offline else { return }
             self.load()
         }
+        pendingRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 }
 
@@ -357,14 +398,15 @@ extension WebViewController: WKUIDelegate {
 
     // Grant camera/mic so voice & video calls work without a second prompt
     // (macOS still gates the real hardware behind its own TCC prompt) — but
-    // only for Messenger/Facebook itself. A third-party frame gets the normal
-    // WebKit prompt instead of a silent grant.
+    // only for the call surfaces themselves (messenger.com / facebook.com).
+    // Anything else — including CDN subdomains — gets the normal WebKit prompt
+    // rather than a silent grant.
     func webView(_ webView: WKWebView,
                  requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(Plume.isInternal(host: origin.host) ? .grant : .prompt)
+        decisionHandler(Plume.isCallOrigin(host: origin.host) ? .grant : .prompt)
     }
 }
 

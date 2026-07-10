@@ -138,6 +138,7 @@ final class ShimmerBar: NSView {
 
 final class ProgressBar: NSView {
     private let segment = CALayer()
+    private var running = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -155,9 +156,17 @@ final class ProgressBar: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         segment.frame = CGRect(x: 0, y: 0, width: bounds.width * 0.3, height: bounds.height)
         CATransaction.commit()
+        // (Re)bind the animation to the current width once we actually have one.
+        restart()
     }
-    func start() {
-        guard !Theme.reduceMotion else { return }
+    func start() { running = true; restart() }
+    func stop() { running = false; segment.removeAnimation(forKey: "progress") }
+
+    /// Animation values depend on the laid-out width, so this is a no-op until
+    /// `bounds.width > 0`; `layout()` calls it again once that holds.
+    private func restart() {
+        guard running, !Theme.reduceMotion, bounds.width > 0 else { return }
+        segment.removeAnimation(forKey: "progress")
         let w = bounds.width
         let anim = CABasicAnimation(keyPath: "position.x")
         anim.fromValue = -w * 0.3
@@ -167,7 +176,6 @@ final class ProgressBar: NSView {
         anim.repeatCount = .infinity
         segment.add(anim, forKey: "progress")
     }
-    func stop() { segment.removeAnimation(forKey: "progress") }
 }
 
 // MARK: - Primary gradient button ("Thử lại")
@@ -336,7 +344,10 @@ final class LoadingView: NSView {
     // Non-interactive: let clicks fall through to the web view beneath.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func startAnimating() { progress.start(); spinner.start() }
+    func startAnimating() {
+        layoutSubtreeIfNeeded()   // give the progress bar a width before it binds
+        progress.start(); spinner.start()
+    }
     func stopAnimating() { progress.stop(); spinner.stop() }
 }
 
