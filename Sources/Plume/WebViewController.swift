@@ -23,6 +23,12 @@ final class WebViewController: NSViewController {
     /// successful load can't leave a stale reload queued behind it.
     private var pendingRetry: DispatchWorkItem?
 
+    /// WebKit does not retain a WKDownload across its async destination/finish
+    /// callbacks, so we hold each one (and its chosen destination) ourselves
+    /// for the download's lifetime.
+    private var activeDownloads: Set<WKDownload> = []
+    private var downloadDestinations: [WKDownload: URL] = [:]
+
     /// Toolbar refreshes its button states through this after any nav change.
     var onChromeUpdate: (() -> Void)?
 
@@ -297,8 +303,17 @@ extension WebViewController: WKNavigationDelegate {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow); return
         }
-        // A user clicking an outbound link → hand off to the real browser.
+        // Web content explicitly asked to download (e.g. an <a download> link).
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download); return
+        }
+        // A user clicking an outbound link → hand off to the real browser,
+        // EXCEPT attachment-CDN links: allow those through so the response
+        // handler can inspect the MIME / Content-Disposition and download them.
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
+            if Plume.isAttachmentHost(url) {
+                decisionHandler(.allow); return
+            }
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel); return
         }
@@ -308,7 +323,42 @@ extension WebViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let url = navigationResponse.response.url {
+            let http = navigationResponse.response as? HTTPURLResponse
+            // Compare the disposition *type* (the token before ';'), per RFC
+            // 6266 — a filename like `inline; filename="q-attachment.pdf"` must
+            // not be treated as an attachment.
+            let dispositionType = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "")
+                .split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            // Download when the server forces it (any frame), or — for the main
+            // frame only — WebKit can't render the type or it's an attachment-CDN
+            // file. Sub-frame heuristics are gated so we don't grab an unrelated
+            // navigation. Inline HTML and images/video from fbcdn.net render as
+            // before.
+            if dispositionType == "attachment"
+                || (!navigationResponse.canShowMIMEType && navigationResponse.isForMainFrame)
+                || (Plume.isAttachmentHost(url) && navigationResponse.isForMainFrame) {
+                decisionHandler(.download); return
+            }
+        }
         decisionHandler(.allow)
+    }
+
+    // The two — and only two — points a navigation converts to a download.
+    // `.download` aborts the navigation without committing a new document, so
+    // Messenger stays put and no nav-failure delegate fires; we just need to
+    // clear the loading overlay (a provisional nav may have started).
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction,
+                 didBecome download: WKDownload) {
+        setLoading(false)
+        beginDownload(download)
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse,
+                 didBecome download: WKDownload) {
+        setLoading(false)
+        beginDownload(download)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -340,13 +390,30 @@ extension WebViewController: WKNavigationDelegate {
     }
 
     private func handleLoadFailure(_ error: Error) {
-        // The user cancelling a navigation (e.g. clicking a link we hand off
-        // to the browser) is not a failure worth reacting to.
-        if (error as NSError).code == NSURLErrorCancelled { return }
-        setLoading(false)
+        let ns = error as NSError
+        setLoading(false)   // any nav ending clears the loading pill
+        // Not real Messenger-connectivity failures — don't show offline:
+        //  • a user-cancelled navigation (a link handed to the browser, or one
+        //    attachment click superseding another);
+        //  • a navigation we turned into a download (WebKit reports
+        //    FrameLoadInterruptedByPolicyChange, 102);
+        //  • an attachment fetch that failed before headers — it rides the main
+        //    frame but must not slam the offline overlay over a healthy session.
+        if ns.code == NSURLErrorCancelled { return }
+        if ns.domain == "WebKitErrorDomain", ns.code == 102 { return }
+        if let failing = Self.failingURL(from: ns), Plume.isAttachmentHost(failing) { return }
         setContentState(.offline)
         onChromeUpdate?()
         scheduleAutoRetry()
+    }
+
+    /// The URL WebKit was loading when a navigation failed, if the error
+    /// carries it — used to tell an attachment-fetch failure apart from a real
+    /// Messenger connectivity failure.
+    private static func failingURL(from error: NSError) -> URL? {
+        if let url = error.userInfo[NSURLErrorFailingURLErrorKey] as? URL { return url }
+        if let s = error.userInfo[NSURLErrorFailingURLStringErrorKey] as? String { return URL(string: s) }
+        return nil
     }
 
     /// Queue a single retry ~3s out. If still offline it fails and reschedules,
@@ -373,7 +440,10 @@ extension WebViewController: WKUIDelegate {
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url {
-            if Plume.isInternal(url) {
+            if Plume.isInternal(url) || Plume.isAttachmentHost(url) {
+                // Internal pages stay in-app; attachment-CDN URLs are loaded in
+                // the main frame so the response handler converts them to a
+                // download (which does NOT replace the current document).
                 webView.load(navigationAction.request)
             } else {
                 NSWorkspace.shared.open(url)
@@ -407,6 +477,53 @@ extension WebViewController: WKUIDelegate {
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(Plume.isCallOrigin(host: origin.host) ? .grant : .prompt)
+    }
+}
+
+// MARK: - Downloads (attachments → in-app PDF viewer or Finder reveal)
+
+extension WebViewController: WKDownloadDelegate {
+    /// Hold the download and start delegating its callbacks to us.
+    func beginDownload(_ download: WKDownload) {
+        download.delegate = self          // delegate is weak…
+        activeDownloads.insert(download)  // …so keep a strong reference here
+    }
+
+    func download(_ download: WKDownload,
+                  decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String,
+                  completionHandler: @escaping (URL?) -> Void) {
+        // Per-download UUID subdir: duplicate filenames never collide and the
+        // returned URL is guaranteed not to pre-exist (WebKit requires that).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlumeAttachments/\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Defence in depth: the sender influences the filename, so strip any
+        // path components (WebKit sanitises too, but never trust it) — a
+        // "../../x" name must not escape the per-download temp dir.
+        let leaf = (suggestedFilename as NSString).lastPathComponent
+        let name = leaf.isEmpty ? "attachment" : leaf
+        let dest = dir.appendingPathComponent(name)
+        downloadDestinations[download] = dest
+        completionHandler(dest)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        let dest = downloadDestinations[download]
+        activeDownloads.remove(download)
+        downloadDestinations[download] = nil
+        guard let url = dest else { return }
+        if url.pathExtension.lowercased() == "pdf" {
+            PDFViewerWindowController.open(url)                   // native in-app viewer
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([url]) // reveal other files
+        }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        activeDownloads.remove(download)
+        downloadDestinations[download] = nil
+        setLoading(false)   // the main frame was never navigated; no offline overlay
     }
 }
 

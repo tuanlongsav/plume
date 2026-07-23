@@ -35,4 +35,23 @@ final class HostRulesTests: XCTestCase {
         XCTAssertFalse(Plume.isCallOrigin(host: "l.facebook.com.evil.com"))
         XCTAssertFalse(Plume.isCallOrigin(host: "evilmessenger.com"))
     }
+
+    // Attachment CDN detection drives in-app download/PDF viewing.
+    func testAttachmentHostDetection() {
+        XCTAssertTrue(Plume.isAttachmentHost(URL(string: "https://cdn.fbsbx.com/v/t59.2708-21/x/doc.pdf?dl=1")!))
+        XCTAssertTrue(Plume.isAttachmentHost(URL(string: "https://attachment.fbsbx.com/file_download.php?id=1")!))
+        XCTAssertTrue(Plume.isAttachmentHost(URL(string: "https://fbsbx.com/x")!))
+
+        // Inline media CDN and look-alikes are NOT attachment hosts.
+        XCTAssertFalse(Plume.isAttachmentHost(URL(string: "https://scontent-xx.fbcdn.net/x.jpg")!))
+        XCTAssertFalse(Plume.isAttachmentHost(URL(string: "https://www.messenger.com/")!))
+        XCTAssertFalse(Plume.isAttachmentHost(URL(string: "https://fbsbx.com.evil.com/x")!))
+    }
+
+    // Regression: the attachment CDN must stay OUT of the navigation/call
+    // allowlists, or fbsbx traffic would wrongly load in-frame / get media.
+    func testAttachmentHostIsNotInternalOrCall() {
+        XCTAssertFalse(Plume.isInternal(host: "cdn.fbsbx.com"))
+        XCTAssertFalse(Plume.isCallOrigin(host: "cdn.fbsbx.com"))
+    }
 }

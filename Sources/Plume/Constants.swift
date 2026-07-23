@@ -48,6 +48,19 @@ enum Plume {
         matches(host, in: callHosts)
     }
 
+    /// File-attachment CDN. Deliberately SEPARATE from `internalHosts` and from
+    /// `fbcdn.net` (the inline image/video CDN): `fbsbx.com` serves user file
+    /// attachments with `Content-Disposition: attachment`. It must stay OUT of
+    /// `internalHosts` — otherwise `isInternal` would route all fbsbx traffic
+    /// into the main frame and break the outbound handoff and media-grant
+    /// scoping. The suffix rule covers `cdn.fbsbx.com` / `attachment.fbsbx.com`.
+    static let attachmentHosts: Set<String> = ["fbsbx.com"]
+
+    static func isAttachmentHost(_ url: URL) -> Bool {
+        guard let host = url.host else { return false }
+        return matches(host, in: attachmentHosts)
+    }
+
     private static func matches(_ host: String, in hosts: Set<String>) -> Bool {
         let host = host.lowercased()
         if hosts.contains(host) { return true }
