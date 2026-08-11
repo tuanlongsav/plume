@@ -303,10 +303,9 @@ final class LoadingView: NSView {
         pill.layer?.cornerRadius = 18
         pill.layer?.masksToBounds = true
         pill.layer?.borderWidth = 1
-        pill.layer?.borderColor = NSColor.separatorColor.cgColor
         pill.translatesAutoresizingMaskIntoConstraints = false
 
-        let label = makeLabel(L.t("Đang kết nối lại…", "Reconnecting…"),
+        let label = makeLabel(L.t("Đang tải…", "Loading…"),
                               size: 12.5, weight: .semibold, color: Theme.textSecondary)
         label.alignment = .left
         let row = NSStackView(views: [spinner, label])
@@ -316,6 +315,7 @@ final class LoadingView: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         pill.addSubview(row)
         addSubview(pill)
+        refreshBorder()
 
         NSLayoutConstraint.activate([
             dim.topAnchor.constraint(equalTo: topAnchor),
@@ -343,6 +343,15 @@ final class LoadingView: NSView {
 
     // Non-interactive: let clicks fall through to the web view beneath.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshBorder()
+    }
+    // separatorColor is dynamic; a captured cgColor wouldn't follow the theme.
+    private func refreshBorder() {
+        withEffectiveAppearance { pill.layer?.borderColor = NSColor.separatorColor.cgColor }
+    }
 
     func startAnimating() {
         layoutSubtreeIfNeeded()   // give the progress bar a width before it binds

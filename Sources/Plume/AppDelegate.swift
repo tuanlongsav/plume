@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        // Mirror the toolbar: grey out when there's nowhere to go.
+        case #selector(goBack):    return controller.canGoBack
+        case #selector(goForward): return controller.canGoForward
         // Dark / Follow System are a tri-state on `forceDark`: true / false / nil.
         case #selector(toggleDark):    item.state = Preferences.forceDark == true ? .on : .off
         case #selector(followSystem):  item.state = Preferences.forceDark == nil ? .on : .off
@@ -171,7 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         viewMenu.addItem(withTitle: "Plume Accent", action: #selector(toggleAccent), keyEquivalent: "").target = self
         viewMenu.addItem(withTitle: "Web Styling", action: #selector(toggleWebStyling), keyEquivalent: "").target = self
         viewMenu.addItem(.separator())
-        viewMenu.addItem(withTitle: "Hide Toolbar", action: #selector(toggleChrome), keyEquivalent: "t").target = self
+        let hideToolbar = viewMenu.addItem(withTitle: "Hide Toolbar", action: #selector(toggleChrome), keyEquivalent: "t")
+        hideToolbar.keyEquivalentModifierMask = [.command, .option]   // macOS convention
+        hideToolbar.target = self
 
         // Window menu
         let windowItem = NSMenuItem()

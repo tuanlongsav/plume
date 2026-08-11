@@ -29,6 +29,11 @@ final class WebViewController: NSViewController {
     private var activeDownloads: Set<WKDownload> = []
     private var downloadDestinations: [WKDownload: URL] = [:]
 
+    /// Set when the next main-frame navigation is an attachment we expect to
+    /// turn into a download — so `didStartProvisionalNavigation` doesn't flash
+    /// the "loading" pill for it. Consumed once, when that navigation starts.
+    private var expectingAttachmentNav = false
+
     /// Toolbar refreshes its button states through this after any nav change.
     var onChromeUpdate: (() -> Void)?
 
@@ -312,6 +317,7 @@ extension WebViewController: WKNavigationDelegate {
         // handler can inspect the MIME / Content-Disposition and download them.
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
             if Plume.isAttachmentHost(url) {
+                expectingAttachmentNav = true   // suppress the loading pill
                 decisionHandler(.allow); return
             }
             NSWorkspace.shared.open(url)
@@ -362,6 +368,9 @@ extension WebViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // An attachment navigation becomes a download almost immediately —
+        // don't flash the loading pill for it.
+        if expectingAttachmentNav { expectingAttachmentNav = false; return }
         // First paint is covered by the splash; later navigations (reload /
         // retry) get the non-blocking loading overlay.
         if hasLoadedOnce { setLoading(true) }
@@ -440,10 +449,13 @@ extension WebViewController: WKUIDelegate {
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url {
-            if Plume.isInternal(url) || Plume.isAttachmentHost(url) {
-                // Internal pages stay in-app; attachment-CDN URLs are loaded in
-                // the main frame so the response handler converts them to a
-                // download (which does NOT replace the current document).
+            if Plume.isAttachmentHost(url) {
+                // Attachment-CDN URLs load in the main frame so the response
+                // handler converts them to a download (without replacing the
+                // current document); suppress the loading pill for them.
+                expectingAttachmentNav = true
+                webView.load(navigationAction.request)
+            } else if Plume.isInternal(url) {
                 webView.load(navigationAction.request)
             } else {
                 NSWorkspace.shared.open(url)
