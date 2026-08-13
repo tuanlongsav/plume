@@ -137,18 +137,23 @@ enum InjectedScript {
     /// Thin scrollbars, softer chat bubbles — applied on every load.
     /// ⚠️ Messenger uses hashed class names; selectors here lean on stable
     /// role/attr hooks and must be verified against the live DOM before ship.
+    /// Bubble styling is scoped to the open thread (`[role="main"]`) so it can't
+    /// bleed into the conversation-list preview rows (which also use
+    /// `[role="row"] [dir="auto"] > span`).
     static let baseCSS = """
     *::-webkit-scrollbar { width: 8px; height: 8px; }
     *::-webkit-scrollbar-thumb { background: rgba(140,140,150,.4); border-radius: 8px; }
     *::-webkit-scrollbar-track { background: transparent; }
-    [role="row"] [dir="auto"] > span { border-radius: 18px !important; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
+    [role="main"] [role="row"] [dir="auto"] > span { border-radius: 18px !important; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
     """
 
-    /// Compact conversation/message density.
+    /// Compact conversation/message density. Bubble padding is scoped to the
+    /// open thread; the row/cell tightening stays broad (it is meant to make
+    /// the conversation list denser) but is only active when Compact is on.
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
     [role="row"] [role="gridcell"] { min-height: 52px; }
-    [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }
+    [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }
     """
 
     /// Restrained Plume indigo accent.
