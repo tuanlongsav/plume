@@ -212,6 +212,18 @@ final class WebViewController: NSViewController {
         webView.evaluateJavaScript("window.__plumeActivateNotification(\(id))", completionHandler: nil)
     }
 
+    // MARK: Conversation navigation (Caprine port)
+
+    private func runConvJS(_ call: String) {
+        webView.evaluateJavaScript("try{window.__plumeConv&&window.__plumeConv.\(call)}catch(e){}",
+                                   completionHandler: nil)
+    }
+    func jumpToConversation(_ n: Int)  { runConvJS("jumpTo(\(n))") }
+    func nextConversation()            { runConvJS("next()") }
+    func previousConversation()        { runConvJS("prev()") }
+    func nextUnreadConversation()      { runConvJS("nextUnread()") }
+    func findConversation()            { runConvJS("find()") }
+
     // MARK: App-state overlays
 
     private func setContentState(_ state: ContentState) {
@@ -236,9 +248,11 @@ final class WebViewController: NSViewController {
             removeWebStyle(InjectedScript.StyleID.base)
             removeWebStyle(InjectedScript.StyleID.density)
             removeWebStyle(InjectedScript.StyleID.accent)
+            removeWebStyle(InjectedScript.StyleID.code)
             return
         }
         setWebStyle(InjectedScript.StyleID.base, InjectedScript.baseCSS)
+        setWebStyle(InjectedScript.StyleID.code, InjectedScript.codeCSS)
         applyDensity()
         applyAccent()
     }

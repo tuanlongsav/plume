@@ -17,7 +17,13 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 - Outbound links open in your default browser, not inside the app
 - Native file picker for attachments; camera/mic granted for calls
 - In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
+- Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
+- Always-on-top window; code-block styling; toolbar & theming toggles
 - Remembers window size & position; full-screen, back/forward, reload
+
+Portions (code-block CSS, scrollbar, conversation navigation) are adapted from
+[Caprine](https://github.com/sindresorhus/caprine) — MIT © Sindre Sorhus; see
+[`NOTICE`](NOTICE).
 
 ## Known limitations
 

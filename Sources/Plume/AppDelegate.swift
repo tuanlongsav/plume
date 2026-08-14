@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.toolbar?.isVisible = Preferences.toolbarVisible   // zero-chrome if off
         controller.onChromeUpdate = { [weak chrome] in chrome?.refresh() }
         chrome.refresh()
+        applyAlwaysOnTop()   // restore the floating-window preference
 
         // Guard against a corrupt or degenerate saved frame. A frame smaller
         // than minSize (a 1×1 frame has been observed) leaves the window
@@ -101,6 +102,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Preferences.toolbarVisible = visible
     }
 
+    @objc private func toggleAlwaysOnTop() {
+        Preferences.alwaysOnTop.toggle()
+        applyAlwaysOnTop()
+    }
+    private func applyAlwaysOnTop() {
+        window.level = Preferences.alwaysOnTop ? .floating : .normal
+    }
+
+    // Conversation navigation (Caprine port)
+    @objc private func nextConversation() { controller.nextConversation() }
+    @objc private func prevConversation() { controller.previousConversation() }
+    @objc private func nextUnread()       { controller.nextUnreadConversation() }
+    @objc private func findConversation() { controller.findConversation() }
+    @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
+    @objc private func toggleShortcuts()  { Preferences.shortcuts.toggle() }
+
     // Escape hatch to a Chromium-based client. Messenger's web app has a
     // conversation-list re-render bug on some in-place mutations (e.g. unsend)
     // that reproduces in Safari/WebKit but not in Chrome/Blink — so WKWebView
@@ -127,6 +144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
         case #selector(toggleAccent):  item.state = controller.isAccentOn ? .on : .off
         case #selector(toggleWebStyling): item.state = controller.isWebStyling ? .on : .off
+        case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
+        case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
+        case #selector(jumpToConversation(_:)), #selector(nextConversation),
+             #selector(prevConversation), #selector(nextUnread),
+             #selector(findConversation):
+            return Preferences.shortcuts
         case #selector(toggleChrome):
             item.title = (window.toolbar?.isVisible ?? true) ? "Hide Toolbar" : "Show Toolbar"
         default: break
@@ -193,6 +216,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hideToolbar.keyEquivalentModifierMask = [.command, .option]   // macOS convention
         hideToolbar.target = self
 
+        // Conversation menu (Caprine port)
+        let convItem = NSMenuItem()
+        mainMenu.addItem(convItem)
+        let convMenu = NSMenu(title: "Conversation")
+        convItem.submenu = convMenu
+        for n in 1...9 {
+            let it = convMenu.addItem(withTitle: "Conversation \(n)",
+                action: #selector(jumpToConversation(_:)), keyEquivalent: "\(n)")
+            it.keyEquivalentModifierMask = [.command]
+            it.tag = n
+            it.target = self
+        }
+        convMenu.addItem(.separator())
+        let nextConv = convMenu.addItem(withTitle: "Select Next Conversation",
+            action: #selector(nextConversation), keyEquivalent: "\t")
+        nextConv.keyEquivalentModifierMask = [.control]
+        nextConv.target = self
+        let prevConv = convMenu.addItem(withTitle: "Select Previous Conversation",
+            action: #selector(prevConversation), keyEquivalent: "\t")
+        prevConv.keyEquivalentModifierMask = [.control, .shift]
+        prevConv.target = self
+        let unread = convMenu.addItem(withTitle: "Next Unread Conversation",
+            action: #selector(nextUnread), keyEquivalent: "u")
+        unread.keyEquivalentModifierMask = [.command, .shift]
+        unread.target = self
+        convMenu.addItem(.separator())
+        convMenu.addItem(withTitle: "Find Conversation…",
+            action: #selector(findConversation), keyEquivalent: "k").target = self
+        convMenu.addItem(.separator())
+        convMenu.addItem(withTitle: "Enable Conversation Shortcuts",
+            action: #selector(toggleShortcuts), keyEquivalent: "").target = self
+
         // Window menu
         let windowItem = NSMenuItem()
         mainMenu.addItem(windowItem)
@@ -200,6 +255,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowItem.submenu = windowMenu
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 
         // Help menu

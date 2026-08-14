@@ -119,6 +119,61 @@ enum InjectedScript {
             if (el) el.remove();
         };
 
+        // --- Conversation navigation (adapted from Caprine browser.ts,
+        //     MIT © Sindre Sorhus). Role-based selectors avoid Meta's hashed
+        //     class churn; conversation-list rows live OUTSIDE the open thread
+        //     ([role=main]). No-ops harmlessly if the DOM shifts. -------------
+        window.__plumeConv = (function () {
+            function rows() {
+                return Array.prototype.slice
+                    .call(document.querySelectorAll('[role="row"]'))
+                    .filter(function (r) { return !r.closest('[role="main"]'); });
+            }
+            function click(row) {
+                if (!row) return false;
+                var link = row.querySelector('[role="link"]') ||
+                           row.querySelector('[role="gridcell"]') || row;
+                link.click();
+                return true;
+            }
+            function selectedIndex() {
+                var r = rows();
+                for (var i = 0; i < r.length; i++) {
+                    if (r[i].querySelector('[aria-current="page"]')) return i;
+                }
+                return -1;
+            }
+            return {
+                jumpTo: function (n) { return click(rows()[n - 1]); },
+                next: function () {
+                    var r = rows(); if (!r.length) return false;
+                    var i = selectedIndex();
+                    return click(r[(i + 1 + r.length) % r.length] || r[0]);
+                },
+                prev: function () {
+                    var r = rows(); if (!r.length) return false;
+                    var i = selectedIndex(); if (i < 0) i = 0;
+                    return click(r[(i - 1 + r.length) % r.length]);
+                },
+                nextUnread: function () {
+                    var r = rows(); if (!r.length) return false;
+                    var start = Math.max(0, selectedIndex());
+                    for (var s = 1; s <= r.length; s++) {
+                        var idx = (start + s) % r.length;
+                        if (r[idx].querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) {
+                            return click(r[idx]);
+                        }
+                    }
+                    return false;
+                },
+                find: function () {
+                    var el = document.querySelector('[type="search"]');
+                    if (el) { el.focus(); return true; }
+                    return false;
+                }
+            };
+        })();
+
         // Note: the unread badge is derived natively by observing WKWebView's
         // `title` (a public, injection-independent signal), so there is no
         // badge bridge here.
@@ -132,6 +187,7 @@ enum InjectedScript {
         static let base = "plume-base"       // always on (scrollbar + soft bubbles)
         static let density = "plume-density" // compact
         static let accent = "plume-accent"   // Plume indigo accent
+        static let code = "plume-code"       // code-block styling
     }
 
     /// Thin scrollbars, softer chat bubbles — applied on every load.
@@ -141,9 +197,18 @@ enum InjectedScript {
     /// bleed into the conversation-list preview rows (which also use
     /// `[role="row"] [dir="auto"] > span`).
     static let baseCSS = """
-    *::-webkit-scrollbar { width: 8px; height: 8px; }
-    *::-webkit-scrollbar-thumb { background: rgba(140,140,150,.4); border-radius: 8px; }
+    *::-webkit-scrollbar { width: 12px; height: 12px; }
+    *::-webkit-scrollbar-thumb {
+        background: transparent;
+        box-shadow: inset 0 0 12px 12px rgba(140,140,150,.45);
+        border: solid 3px transparent; border-radius: 8px;
+    }
     *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-track:hover { box-shadow: inset 0 0 12px 12px rgba(140,140,150,.10); }
+    @media (prefers-color-scheme: dark) {
+        *::-webkit-scrollbar-thumb { box-shadow: inset 0 0 12px 12px rgba(255,255,255,.30); }
+        *::-webkit-scrollbar-track:hover { box-shadow: inset 0 0 12px 12px rgba(255,255,255,.06); }
+    }
     [role="main"] [role="row"] [dir="auto"] > span { border-radius: 18px !important; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
     """
 
@@ -162,5 +227,43 @@ enum InjectedScript {
     div[role="button"][aria-label] svg[aria-hidden="true"] { color: var(--plume-accent); }
     [role="grid"] [role="row"][aria-selected="true"] { box-shadow: inset 3px 0 0 var(--plume-accent); }
     a[role="link"]:hover { color: var(--plume-accent); }
+    """
+
+    /// Code blocks — Tomorrow (light) / Tomorrow-Night (dark) palette, adapted
+    /// from Caprine (MIT © Sindre Sorhus). Keyed on semantic <pre>/<code> tags,
+    /// scoped to the open thread; the .token.* colours are inert unless
+    /// Messenger ships a syntax highlighter.
+    static let codeCSS = """
+    [role="main"] pre, [role="main"] code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12.5px;
+    }
+    [role="main"] pre {
+        background: rgba(0,0,0,.04) !important;
+        border: 1px solid rgba(0,0,0,.10) !important;
+        border-radius: 8px !important; padding: 10px 12px !important;
+        color: #1d1f21 !important; overflow-x: auto;
+    }
+    [role="main"] :not(pre) > code {
+        background: rgba(0,0,0,.06) !important; border-radius: 4px;
+        padding: 1px 5px !important; color: #1d1f21 !important;
+    }
+    [role="main"] pre .token.comment, [role="main"] pre .token.prolog { color:#969896 !important; }
+    [role="main"] pre .token.keyword, [role="main"] pre .token.important { color:#b294bb !important; }
+    [role="main"] pre .token.function { color:#81a2be !important; }
+    [role="main"] pre .token.string, [role="main"] pre .token.char { color:#b5bd68 !important; }
+    [role="main"] pre .token.number, [role="main"] pre .token.boolean, [role="main"] pre .token.constant { color:#de935f !important; }
+    [role="main"] pre .token.tag { color:#a3685a !important; }
+    [role="main"] pre .token.attr-name, [role="main"] pre .token.variable { color:#cc6666 !important; }
+    [role="main"] pre .token.attr-value { color:#139543 !important; }
+    @media (prefers-color-scheme: dark) {
+        [role="main"] pre {
+            background: rgba(255,255,255,.05) !important;
+            border-color: rgba(255,255,255,.10) !important; color: #c5c8c6 !important;
+        }
+        [role="main"] :not(pre) > code {
+            background: rgba(255,255,255,.08) !important; color: #c5c8c6 !important;
+        }
+    }
     """
 }

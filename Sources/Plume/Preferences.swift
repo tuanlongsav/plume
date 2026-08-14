@@ -36,4 +36,16 @@ enum Preferences {
         get { defaults.object(forKey: "plume.toolbar") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "plume.toolbar") }
     }
+
+    /// Keep the window floating above other apps. Defaults to off.
+    static var alwaysOnTop: Bool {
+        get { defaults.bool(forKey: "plume.alwaysOnTop") }
+        set { defaults.set(newValue, forKey: "plume.alwaysOnTop") }
+    }
+
+    /// Conversation keyboard navigation (Caprine port). Defaults to on.
+    static var shortcuts: Bool {
+        get { defaults.object(forKey: "plume.shortcuts") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "plume.shortcuts") }
+    }
 }
