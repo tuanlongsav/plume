@@ -152,7 +152,8 @@ enum InjectedScript {
                 },
                 prev: function () {
                     var r = rows(); if (!r.length) return false;
-                    var i = selectedIndex(); if (i < 0) i = 0;
+                    var i = selectedIndex();
+                    if (i < 0) return click(r[0]);   // mirror next() from no selection
                     return click(r[(i - 1 + r.length) % r.length]);
                 },
                 nextUnread: function () {

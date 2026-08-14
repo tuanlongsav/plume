@@ -70,7 +70,8 @@ final class WebViewController: NSViewController {
         wv.allowsMagnification = true
         wv.navigationDelegate = self
         wv.uiDelegate = self
-        wv.setValue(false, forKey: "drawsBackground") // avoid white flash on load
+        // drawsBackground is set by setContentState(.splash) below (false until
+        // the first paint) — no separate anti-flash write needed here.
         wv.translatesAutoresizingMaskIntoConstraints = false
 
         // KVO the title to keep the dock badge in sync as a fallback.
@@ -131,10 +132,12 @@ final class WebViewController: NSViewController {
     var canGoForward: Bool { webView.canGoForward }
 
     // Dark: force the native appearance (web content follows via
-    // prefers-color-scheme). Toggling flips between forcing dark and light.
-    var isDark: Bool { NSApp.effectiveAppearance.isDark }
+    // prefers-color-scheme). "Dark Mode" toggles forced-dark ⇄ forced-light off
+    // its own override state (not the rendered appearance); "Follow System"
+    // resets the override to nil.
+    var isDarkForced: Bool { Preferences.forceDark == true }
     func toggleDark() {
-        Preferences.forceDark = isDark ? false : true
+        Preferences.forceDark = (Preferences.forceDark == true) ? false : true
         WebViewController.applyAppearance()
         onChromeUpdate?()
     }
@@ -509,6 +512,17 @@ extension WebViewController: WKUIDelegate {
 // MARK: - Downloads (attachments → in-app PDF viewer or Finder reveal)
 
 extension WebViewController: WKDownloadDelegate {
+    /// Throwaway view-copies of opened attachments live here.
+    static let downloadsDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PlumeAttachments", isDirectory: true)
+
+    /// Delete stale attachment copies — call once at launch. They're view-only
+    /// (the user's durable copy is whatever they Save-a-Copy'd), no PDF window
+    /// survives a relaunch, so nothing here is still needed.
+    static func clearDownloadCache() {
+        try? FileManager.default.removeItem(at: downloadsDir)
+    }
+
     /// Hold the download and start delegating its callbacks to us.
     func beginDownload(_ download: WKDownload) {
         download.delegate = self          // delegate is weak…
@@ -521,8 +535,7 @@ extension WebViewController: WKDownloadDelegate {
                   completionHandler: @escaping (URL?) -> Void) {
         // Per-download UUID subdir: duplicate filenames never collide and the
         // returned URL is guaranteed not to pre-exist (WebKit requires that).
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PlumeAttachments/\(UUID().uuidString)", isDirectory: true)
+        let dir = Self.downloadsDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Defence in depth: the sender influences the filename, so strip any
         // path components (WebKit sanitises too, but never trust it) — a
@@ -547,9 +560,26 @@ extension WebViewController: WKDownloadDelegate {
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        let filename = downloadDestinations[download]?.lastPathComponent
         activeDownloads.remove(download)
         downloadDestinations[download] = nil
         setLoading(false)   // the main frame was never navigated; no offline overlay
+        // A superseded download (another attachment click) cancels this one —
+        // not worth surfacing. Everything else failed a user-requested open.
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        notifyDownloadFailed(filename)
+    }
+
+    private func notifyDownloadFailed(_ filename: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Không tải được tệp", "Download failed")
+        content.body = filename.map { L.t("Không tải được “\($0)”.", "Couldn't download “\($0)”.") }
+            ?? L.t("Không tải được tệp đính kèm.", "Couldn't download the attachment.")
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "plume-dlfail-\(UUID().uuidString)",
+                                  content: content, trigger: nil),
+            withCompletionHandler: nil)
     }
 }
 

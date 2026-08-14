@@ -176,11 +176,6 @@ final class PDFViewerWindowController: NSWindowController {
             pdfView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-
-        // Selection-change notification drives find-result highlighting.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(selectionDidChange),
-            name: .PDFViewSelectionChanged, object: pdfView)
     }
 
     private func buildFindBar() {
@@ -286,27 +281,12 @@ final class PDFViewerWindowController: NSWindowController {
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
-    // MARK: - Actions: Find (Cmd+F wiring)
+    // MARK: - Actions: Find
 
-    /// Invoked by the toolbar's Find button (and would also serve a standard
-    /// Edit ▸ Find menu item, if one is ever added). Cmd+F itself is handled
-    /// locally by `FindablePDFView` so it doesn't shadow the main window's
-    /// shortcut. Drives our own in-window find bar.
+    /// Invoked by the toolbar's Find button. Cmd+F is handled locally by
+    /// `FindablePDFView`; opens our in-window find bar.
     @objc func performFindPanelAction(_ sender: Any?) {
-        let tag = (sender as? NSMenuItem)?.tag ?? NSTextFinder.Action.showFindInterface.rawValue
-        switch NSTextFinder.Action(rawValue: tag) {
-        case .nextMatch:      findNext()
-        case .previousMatch:  findPrevious()
-        default:              showFindBar()
-        }
-    }
-
-    /// Enable the Find menu items while this window is key.
-    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(performFindPanelAction(_:)) {
-            return pdfView.document != nil
-        }
-        return true
+        showFindBar()
     }
 
     private func showFindBar() {
@@ -349,12 +329,6 @@ final class PDFViewerWindowController: NSWindowController {
         let match = searchMatches[currentMatchIndex]
         pdfView.setCurrentSelection(match, animate: true)
         pdfView.scrollSelectionToVisible(nil)
-    }
-
-    @objc private func selectionDidChange(_ note: Notification) {
-        // Keep the coloured highlights visible even as the current selection
-        // (the "active" match) moves; nothing extra needed here today, but this
-        // hook is where you'd update a "3 of 12" match counter label.
     }
 
     // MARK: - Actions: Zoom (toolbar) — PDFView provides these for free

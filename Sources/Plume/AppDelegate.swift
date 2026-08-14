@@ -1,7 +1,7 @@
 import AppKit
 import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation, NSWindowDelegate {
     private var window: NSWindow!
     private var controller: WebViewController!
 
@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Restore the saved appearance override before any window shows.
         WebViewController.applyAppearance()
+        // Purge last session's throwaway attachment copies before any run.
+        WebViewController.clearDownloadCache()
 
         controller = WebViewController()
 
@@ -23,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentViewController = controller
         window.minSize = NSSize(width: 420, height: 520)
         window.setFrameAutosaveName("PlumeMainWindow")   // remember size/position
+        window.delegate = self   // for full-screen ⇄ always-on-top reconciliation
 
         // Native unified-toolbar chrome (vibrancy header + traffic lights).
         chrome = ChromeToolbar(controller: controller)
@@ -107,8 +110,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         applyAlwaysOnTop()
     }
     private func applyAlwaysOnTop() {
-        window.level = Preferences.alwaysOnTop ? .floating : .normal
+        // A .floating level breaks the native full-screen transition, so only
+        // float while not full-screen.
+        let float = Preferences.alwaysOnTop && !window.styleMask.contains(.fullScreen)
+        window.level = float ? .floating : .normal
     }
+
+    // Drop the floating level for full screen, restore it on exit.
+    func windowWillEnterFullScreen(_ notification: Notification) { window.level = .normal }
+    func windowDidExitFullScreen(_ notification: Notification) { applyAlwaysOnTop() }
 
     // Conversation navigation (Caprine port)
     @objc private func nextConversation() { controller.nextConversation() }

@@ -71,6 +71,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
         item.label = label
         item.paletteLabel = label
+        item.toolTip = label
         item.isBordered = true
         item.isNavigational = true
         item.target = self
@@ -86,6 +87,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
         button.isBordered = true
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
         button.imagePosition = .imageOnly
+        button.toolTip = label
         button.target = self
         button.action = action
         let item = NSToolbarItem(itemIdentifier: id)
@@ -108,7 +110,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
     /// Re-tint the toggles to match live state. Wire `controller.onChromeUpdate`
     /// to this.
     func refresh() {
-        darkButton?.contentTintColor = (controller?.isDark ?? false) ? Theme.accent : nil
+        darkButton?.contentTintColor = (controller?.isDarkForced ?? false) ? Theme.accent : nil
         compactButton?.contentTintColor = (controller?.isCompact ?? false) ? Theme.accent : nil
     }
 

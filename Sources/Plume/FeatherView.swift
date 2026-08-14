@@ -10,7 +10,7 @@ final class FeatherView: NSView {
     enum Variant { case fullColor, mono }
 
     private let variant: Variant
-    private var monoColor: NSColor
+    private let monoColor: NSColor
 
     // fullColor layers
     private let gradient = CAGradientLayer()
