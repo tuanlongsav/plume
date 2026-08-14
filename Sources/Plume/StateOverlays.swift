@@ -353,7 +353,11 @@ final class LoadingView: NSView {
         withEffectiveAppearance { pill.layer?.borderColor = NSColor.separatorColor.cgColor }
     }
 
-    func startAnimating() {
+    /// `dimmed` false shows just the progress bar + pill without darkening the
+    /// page — used for a background attachment download, where the web view
+    /// stays fully usable underneath.
+    func startAnimating(dimmed: Bool = true) {
+        dim.isHidden = !dimmed
         layoutSubtreeIfNeeded()   // give the progress bar a width before it binds
         progress.start(); spinner.start()
     }

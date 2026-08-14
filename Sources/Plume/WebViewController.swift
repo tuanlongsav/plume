@@ -28,6 +28,9 @@ final class WebViewController: NSViewController {
     /// for the download's lifetime.
     private var activeDownloads: Set<WKDownload> = []
     private var downloadDestinations: [WKDownload: URL] = [:]
+    /// Delays the (undimmed) download progress pill so instant downloads — the
+    /// common case — don't flash it.
+    private var downloadLoadingWork: DispatchWorkItem?
 
     /// Set when the next main-frame navigation is an attachment we expect to
     /// turn into a download — so `didStartProvisionalNavigation` doesn't flash
@@ -237,9 +240,9 @@ final class WebViewController: NSViewController {
         webView.setValue(state == .main, forKey: "drawsBackground")
     }
 
-    private func setLoading(_ on: Bool) {
+    private func setLoading(_ on: Bool, dimmed: Bool = true) {
         loadingView.isHidden = !on
-        if on { loadingView.startAnimating() } else { loadingView.stopAnimating() }
+        if on { loadingView.startAnimating(dimmed: dimmed) } else { loadingView.stopAnimating() }
     }
 
     // MARK: Tầng-B CSS theming
@@ -527,6 +530,27 @@ extension WebViewController: WKDownloadDelegate {
     func beginDownload(_ download: WKDownload) {
         download.delegate = self          // delegate is weak…
         activeDownloads.insert(download)  // …so keep a strong reference here
+        scheduleDownloadIndicator()
+    }
+
+    /// Show the progress pill (no dim) only if a download is still running after
+    /// a short delay — most attachments finish instantly.
+    private func scheduleDownloadIndicator() {
+        guard downloadLoadingWork == nil else { return }   // one timer covers all
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.activeDownloads.isEmpty else { return }
+            self.setLoading(true, dimmed: false)
+        }
+        downloadLoadingWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// Called when a download finishes/fails; clears the pill once none remain.
+    private func downloadEnded() {
+        guard activeDownloads.isEmpty else { return }
+        downloadLoadingWork?.cancel()
+        downloadLoadingWork = nil
+        setLoading(false)
     }
 
     func download(_ download: WKDownload,
@@ -551,6 +575,7 @@ extension WebViewController: WKDownloadDelegate {
         let dest = downloadDestinations[download]
         activeDownloads.remove(download)
         downloadDestinations[download] = nil
+        downloadEnded()
         guard let url = dest else { return }
         if url.pathExtension.lowercased() == "pdf" {
             PDFViewerWindowController.open(url)                   // native in-app viewer
@@ -563,7 +588,7 @@ extension WebViewController: WKDownloadDelegate {
         let filename = downloadDestinations[download]?.lastPathComponent
         activeDownloads.remove(download)
         downloadDestinations[download] = nil
-        setLoading(false)   // the main frame was never navigated; no offline overlay
+        downloadEnded()   // clears the progress pill once no download remains
         // A superseded download (another attachment click) cancels this one —
         // not worth surfacing. Everything else failed a user-requested open.
         if (error as NSError).code == NSURLErrorCancelled { return }
