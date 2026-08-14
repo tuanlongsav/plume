@@ -118,21 +118,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
     @objc private func toggleShortcuts()  { Preferences.shortcuts.toggle() }
 
-    // Escape hatch to a Chromium-based client. Messenger's web app has a
-    // conversation-list re-render bug on some in-place mutations (e.g. unsend)
-    // that reproduces in Safari/WebKit but not in Chrome/Blink — so WKWebView
-    // inherits it and it can't be fixed from inside the wrapper. Caprine is a
-    // mature Electron (Chromium) Messenger client without the bug.
-    @objc private func openCaprine() {
-        let ws = NSWorkspace.shared
-        if let appURL = ws.urlForApplication(withBundleIdentifier: "com.sindresorhus.Caprine") {
-            ws.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration(),
-                               completionHandler: nil)
-        } else {
-            ws.open(URL(string: "https://github.com/sindresorhus/caprine")!)
-        }
-    }
-
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         // Mirror the toolbar: grey out when there's nowhere to go.
@@ -258,14 +243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
-
-        // Help menu
-        let helpItem = NSMenuItem()
-        mainMenu.addItem(helpItem)
-        let helpMenu = NSMenu(title: "Help")
-        helpItem.submenu = helpMenu
-        helpMenu.addItem(withTitle: "Get Caprine (Chromium)…", action: #selector(openCaprine), keyEquivalent: "").target = self
-        NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
     }

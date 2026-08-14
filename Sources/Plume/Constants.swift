@@ -11,17 +11,13 @@ enum Plume {
         "AppleWebKit/605.1.15 (KHTML, like Gecko) " +
         "Version/18.0 Safari/605.1.15"
 
-    /// Hosts we keep *inside* the app. Anything else opens in the
-    /// user's default browser instead of hijacking our window.
+    /// Registrable domains we keep *inside* the app. Anything else opens in the
+    /// user's default browser instead of hijacking our window. `matches`
+    /// suffix-tests subdomains, so `www.`/`m.`/`l.`/`accountscenter.` etc. are
+    /// all covered by the parent domain — no need to list them.
     static let internalHosts: Set<String> = [
         "messenger.com",
-        "www.messenger.com",
         "facebook.com",
-        "www.facebook.com",
-        "m.facebook.com",
-        "l.facebook.com",
-        "lm.facebook.com",
-        "accountscenter.facebook.com",
         "fbcdn.net",
     ]
 
