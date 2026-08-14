@@ -16,7 +16,24 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 - Dock unread badge, synced from the page's unread count
 - Outbound links open in your default browser, not inside the app
 - Native file picker for attachments; camera/mic granted for calls
+- In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
 - Remembers window size & position; full-screen, back/forward, reload
+
+## Known limitations
+
+Because Plume renders Messenger in the system **WebKit** engine (the same one
+Safari uses), it inherits Messenger's WebKit-specific quirks. The notable one:
+after an in-place change to a conversation — e.g. **unsending a message** — the
+**conversation list can fail to re-render** its latest-message preview (or drop
+the row) until the page is reloaded. This reproduces in Safari but *not* in
+Chrome/Blink, so it's a Messenger-on-WebKit rendering bug, not something the
+wrapper can fix from the outside. Recovery: **⌘R** (Reload), or click another
+conversation and back — no messages are lost.
+
+If you need the Chromium behaviour, **Help ▸ Get Caprine (Chromium)…** opens
+[Caprine](https://github.com/sindresorhus/caprine) — a mature Electron client
+that doesn't have this bug (at the cost of the ~150 MB Chromium bundle Plume
+exists to avoid).
 
 ## Build
 
