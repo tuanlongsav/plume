@@ -195,11 +195,21 @@ enum InjectedScript {
     /// starved new-message updates. Both were removed; don't reintroduce them.
     enum StyleID {
         static let density = "plume-density" // compact
+        static let bubbleSidebar = "plume-bubble-sidebar" // chat bubble only
     }
 
     /// Compact conversation/message density (only active when Compact is on).
     /// Padding only — the former `min-height` on every gridcell was dropped: a
     /// forced height on rows of a virtualised list fights its own measurement.
+    /// Chat-bubble only: hide Messenger's conversation list so the panel shows
+    /// just the open thread. Needed for the bubble's privacy goal — at narrow
+    /// widths Messenger only collapses the sidebar to an icon rail that still
+    /// shows contact avatars. One rule, and `[role="navigation"]` matches a
+    /// handful of nodes, so it stays within the performance rule above.
+    static let hideSidebarCSS = """
+    [role="navigation"] { display: none !important; }
+    """
+
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
     [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }

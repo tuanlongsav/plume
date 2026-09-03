@@ -204,6 +204,9 @@ final class WebViewController: NSViewController {
     // Called on the main thread (from title KVO); no dispatch needed.
     func setBadge(_ count: Int) {
         NSApp.dockTile.badgeLabel = count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+        // The chat bubble badges itself from this instead of watching the DOM.
+        NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,
+                                        userInfo: ["count": count])
     }
 
     // Reopen the thread tied to a clicked native notification.

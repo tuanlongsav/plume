@@ -17,6 +17,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
         static let reload = NSToolbarItem.Identifier("plume.reload")
         static let dark = NSToolbarItem.Identifier("plume.dark")
         static let compact = NSToolbarItem.Identifier("plume.compact")
+        static let bubble = NSToolbarItem.Identifier("plume.bubble")
     }
 
     init(controller: WebViewController) {
@@ -30,7 +31,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
     // MARK: Delegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ID.back, ID.forward, ID.reload, .flexibleSpace, ID.dark, ID.compact]
+        [ID.back, ID.forward, ID.reload, .flexibleSpace, ID.bubble, ID.dark, ID.compact]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.space, .flexibleSpace]
@@ -48,6 +49,9 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
         case ID.reload:
             return navItem(id, symbol: "arrow.clockwise",
                            label: L.t("Tải lại", "Reload"), action: #selector(reload))
+        case ID.bubble:
+            return navItem(id, symbol: "bubble.left.and.bubble.right",
+                           label: L.t("Bong bóng", "Chat Bubble"), action: #selector(switchToBubble))
         case ID.dark:
             let (item, button) = toggleItem(id, symbol: "moon",
                                             label: L.t("Nền tối", "Dark"), action: #selector(toggleDark))
@@ -119,6 +123,9 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
     @objc private func back() { controller?.goBack() }
     @objc private func forward() { controller?.goForward() }
     @objc private func reload() { controller?.reload() }
+    @objc private func switchToBubble() {
+        (NSApp.delegate as? AppDelegate)?.toggleChatBubble()
+    }
     @objc private func toggleDark() { controller?.toggleDark() }
     @objc private func toggleCompact() { controller?.toggleCompact() }
 }

@@ -59,12 +59,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // In bubble mode the main window is intentionally hidden — leave it that
+        // way and just resurface the bubble.
+        if ChatBubbleController.isOpen { return true }
         if !flag { window.makeKeyAndOrderFront(nil) }
         return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        // Bubble mode deliberately hides the main window and leaves only panels,
+        // which AppKit does not count as windows here — returning true would
+        // quit the app the instant we switch modes.
+        return !ChatBubbleController.isOpen
     }
 
     // MARK: Notification handling
@@ -104,6 +110,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Preferences.toolbarVisible = visible
     }
 
+    /// Bubble mode replaces the main window rather than sitting alongside it:
+    /// the whole point is a compact, private surface, so leaving the full
+    /// window on screen would defeat it.
+    @objc func toggleChatBubble() {
+        if ChatBubbleController.isOpen {
+            exitBubbleMode()
+        } else {
+            ChatBubbleController.show(onExit: { [weak self] in self?.exitBubbleMode() })
+            window.orderOut(nil)
+        }
+    }
+
+    private func exitBubbleMode() {
+        ChatBubbleController.hide()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func toggleAlwaysOnTop() {
         Preferences.alwaysOnTop.toggle()
         applyAlwaysOnTop()
@@ -138,6 +162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
         case #selector(toggleWebStyling): item.state = controller.isWebStyling ? .on : .off
         case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
+        case #selector(toggleChatBubble):
+            item.title = ChatBubbleController.isOpen
+                ? L.t("Về cửa sổ chính", "Back to Main Window")
+                : L.t("Chuyển sang bong bóng", "Switch to Chat Bubble")
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
         case #selector(jumpToConversation(_:)), #selector(nextConversation),
              #selector(prevConversation), #selector(nextUnread),
@@ -248,6 +276,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
+        let bubbleItem = windowMenu.addItem(withTitle: "Chat Bubble",
+                                            action: #selector(toggleChatBubble), keyEquivalent: "b")
+        bubbleItem.keyEquivalentModifierMask = [.command, .option]
+        bubbleItem.target = self
         windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 
