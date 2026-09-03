@@ -18,10 +18,15 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 - Native file picker for attachments; camera/mic granted for calls
 - In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
 - Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
-- Always-on-top window; code-block styling; toolbar & theming toggles
+- Always-on-top window; toolbar & theming toggles
 - Remembers window size & position; full-screen, back/forward, reload
 
-Portions (code-block CSS, scrollbar, conversation navigation) are adapted from
+Plume deliberately injects almost no CSS into Messenger. Decorative layers we
+tried (custom scrollbars, per-bubble shadows, an accent tint) measurably slowed
+the page down — see the performance note in
+[`InjectedScript.swift`](Sources/Plume/InjectedScript.swift) before adding any.
+
+The conversation-navigation logic is adapted from
 [Caprine](https://github.com/sindresorhus/caprine) — MIT © Sindre Sorhus; see
 [`NOTICE`](NOTICE).
 

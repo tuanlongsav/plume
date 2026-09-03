@@ -5,12 +5,13 @@ Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
 Licensed under the MIT License.
 https://github.com/sindresorhus/caprine
 
-The following Plume source incorporates logic/CSS adapted from Caprine:
+The following Plume source incorporates logic adapted from Caprine:
   - Sources/Plume/InjectedScript.swift
-      • codeCSS   — code-block styling (Tomorrow / Tomorrow-Night palette)
-      • baseCSS   — the inset-thumb / hover-track scrollbar
       • __plumeConv (jumpTo / next / prev / nextUnread / find) — conversation
         keyboard navigation, adapted from Caprine's browser navigation logic
+
+(The code-block and scrollbar CSS previously adapted from Caprine has been
+removed — injecting it into Messenger cost too much rendering performance.)
 
 --- MIT License ---
 

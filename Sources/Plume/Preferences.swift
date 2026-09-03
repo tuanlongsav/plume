@@ -17,12 +17,6 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.compact") }
     }
 
-    /// Plume indigo accent theming (tầng B). Defaults to on.
-    static var accent: Bool {
-        get { defaults.object(forKey: "plume.accent") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "plume.accent") }
-    }
-
     /// Master kill switch for all injected tầng-B CSS. Off ⇒ remove every
     /// Plume style layer (escape hatch if a selector breaks Messenger's
     /// layout after a DOM change). Defaults to on.

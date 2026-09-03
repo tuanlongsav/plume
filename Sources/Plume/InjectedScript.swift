@@ -184,87 +184,32 @@ enum InjectedScript {
     // MARK: - Tầng B stylesheets
 
     /// Style ids used by `__plumeSetStyle` / `__plumeRemoveStyle`.
+    ///
+    /// ⚠️ PERFORMANCE RULE for anything added here: Messenger is a huge
+    /// virtualised React app, so every injected selector is re-matched against
+    /// each of the thousands of nodes it inserts while paginating. Keep rules
+    /// few, narrowly scoped, and never universal. A previous `*::-webkit-
+    /// scrollbar` block replaced WebKit's native overlay scrollbars with custom
+    /// ones on *every* scrollable element, and a per-bubble box-shadow painted
+    /// on every message — together they made loading old messages crawl and
+    /// starved new-message updates. Both were removed; don't reintroduce them.
     enum StyleID {
-        static let base = "plume-base"       // always on (scrollbar + soft bubbles)
         static let density = "plume-density" // compact
-        static let accent = "plume-accent"   // Plume indigo accent
-        static let code = "plume-code"       // code-block styling
     }
 
-    /// Thin scrollbars, softer chat bubbles — applied on every load.
-    /// ⚠️ Messenger uses hashed class names; selectors here lean on stable
-    /// role/attr hooks and must be verified against the live DOM before ship.
-    /// Bubble styling is scoped to the open thread (`[role="main"]`) so it can't
-    /// bleed into the conversation-list preview rows (which also use
-    /// `[role="row"] [dir="auto"] > span`).
-    static let baseCSS = """
-    *::-webkit-scrollbar { width: 12px; height: 12px; }
-    *::-webkit-scrollbar-thumb {
-        background: transparent;
-        box-shadow: inset 0 0 12px 12px rgba(140,140,150,.45);
-        border: solid 3px transparent; border-radius: 8px;
-    }
-    *::-webkit-scrollbar-track { background: transparent; }
-    *::-webkit-scrollbar-track:hover { box-shadow: inset 0 0 12px 12px rgba(140,140,150,.10); }
-    @media (prefers-color-scheme: dark) {
-        *::-webkit-scrollbar-thumb { box-shadow: inset 0 0 12px 12px rgba(255,255,255,.30); }
-        *::-webkit-scrollbar-track:hover { box-shadow: inset 0 0 12px 12px rgba(255,255,255,.06); }
-    }
-    [role="main"] [role="row"] [dir="auto"] > span { border-radius: 18px !important; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
-    """
-
-    /// Compact conversation/message density. Bubble padding is scoped to the
-    /// open thread; the row/cell tightening stays broad (it is meant to make
-    /// the conversation list denser) but is only active when Compact is on.
+    /// Compact conversation/message density (only active when Compact is on).
+    /// Padding only — the former `min-height` on every gridcell was dropped: a
+    /// forced height on rows of a virtualised list fights its own measurement.
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
-    [role="row"] [role="gridcell"] { min-height: 52px; }
     [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }
     """
 
-    /// Restrained Plume indigo accent.
-    static let accentCSS = """
-    :root { --plume-accent: #4F46E5; --plume-accent-2: #4338CA; }
-    div[role="button"][aria-label] svg[aria-hidden="true"] { color: var(--plume-accent); }
-    [role="grid"] [role="row"][aria-selected="true"] { box-shadow: inset 3px 0 0 var(--plume-accent); }
-    a[role="link"]:hover { color: var(--plume-accent); }
-    """
-
-    /// Code blocks — Tomorrow (light) / Tomorrow-Night (dark) palette, adapted
-    /// from Caprine (MIT © Sindre Sorhus). Keyed on semantic <pre>/<code> tags,
-    /// scoped to the open thread; the .token.* colours are inert unless
-    /// Messenger ships a syntax highlighter.
-    static let codeCSS = """
-    [role="main"] pre, [role="main"] code {
-        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-        font-size: 12.5px;
-    }
-    [role="main"] pre {
-        background: rgba(0,0,0,.04) !important;
-        border: 1px solid rgba(0,0,0,.10) !important;
-        border-radius: 8px !important; padding: 10px 12px !important;
-        color: #1d1f21 !important; overflow-x: auto;
-    }
-    [role="main"] :not(pre) > code {
-        background: rgba(0,0,0,.06) !important; border-radius: 4px;
-        padding: 1px 5px !important; color: #1d1f21 !important;
-    }
-    [role="main"] pre .token.comment, [role="main"] pre .token.prolog { color:#969896 !important; }
-    [role="main"] pre .token.keyword, [role="main"] pre .token.important { color:#b294bb !important; }
-    [role="main"] pre .token.function { color:#81a2be !important; }
-    [role="main"] pre .token.string, [role="main"] pre .token.char { color:#b5bd68 !important; }
-    [role="main"] pre .token.number, [role="main"] pre .token.boolean, [role="main"] pre .token.constant { color:#de935f !important; }
-    [role="main"] pre .token.tag { color:#a3685a !important; }
-    [role="main"] pre .token.attr-name, [role="main"] pre .token.variable { color:#cc6666 !important; }
-    [role="main"] pre .token.attr-value { color:#139543 !important; }
-    @media (prefers-color-scheme: dark) {
-        [role="main"] pre {
-            background: rgba(255,255,255,.05) !important;
-            border-color: rgba(255,255,255,.10) !important; color: #c5c8c6 !important;
-        }
-        [role="main"] :not(pre) > code {
-            background: rgba(255,255,255,.08) !important; color: #c5c8c6 !important;
-        }
-    }
-    """
+    // Removed for performance: the indigo accent layer and the code-block
+    // styling. Both were decorative, and both keyed on the elements Messenger
+    // churns hardest while paginating — the accent matched every icon SVG
+    // (walking ancestors per match) and every grid row, and put inherited
+    // custom properties on :root. Together with the old universal scrollbar
+    // rules they made old-message loading crawl. See the note on StyleID
+    // before adding anything back here.
 }

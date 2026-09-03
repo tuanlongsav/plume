@@ -97,7 +97,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func toggleDark() { controller.toggleDark() }
     @objc private func followSystem() { controller.followSystemAppearance() }
     @objc private func toggleCompact() { controller.toggleCompact() }
-    @objc private func toggleAccent() { controller.toggleAccent() }
     @objc private func toggleWebStyling() { controller.toggleWebStyling() }
     @objc private func toggleChrome() {
         let visible = !(window.toolbar?.isVisible ?? true)
@@ -137,7 +136,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(toggleDark):    item.state = Preferences.forceDark == true ? .on : .off
         case #selector(followSystem):  item.state = Preferences.forceDark == nil ? .on : .off
         case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
-        case #selector(toggleAccent):  item.state = controller.isAccentOn ? .on : .off
         case #selector(toggleWebStyling): item.state = controller.isWebStyling ? .on : .off
         case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
@@ -204,7 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let compact = viewMenu.addItem(withTitle: "Compact Density", action: #selector(toggleCompact), keyEquivalent: "d")
         compact.keyEquivalentModifierMask = [.command, .shift]
         compact.target = self
-        viewMenu.addItem(withTitle: "Plume Accent", action: #selector(toggleAccent), keyEquivalent: "").target = self
         viewMenu.addItem(withTitle: "Web Styling", action: #selector(toggleWebStyling), keyEquivalent: "").target = self
         viewMenu.addItem(.separator())
         let hideToolbar = viewMenu.addItem(withTitle: "Hide Toolbar", action: #selector(toggleChrome), keyEquivalent: "t")

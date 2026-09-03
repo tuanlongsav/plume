@@ -164,13 +164,6 @@ final class WebViewController: NSViewController {
         onChromeUpdate?()
     }
 
-    var isAccentOn: Bool { Preferences.accent }
-    func toggleAccent() {
-        Preferences.accent.toggle()
-        applyAccent()
-        onChromeUpdate?()
-    }
-
     var isWebStyling: Bool { Preferences.webStyling }
     func toggleWebStyling() {
         Preferences.webStyling.toggle()
@@ -251,29 +244,16 @@ final class WebViewController: NSViewController {
     /// The master `webStyling` switch strips every layer when off.
     private func applyWebTheme() {
         guard Preferences.webStyling else {
-            removeWebStyle(InjectedScript.StyleID.base)
             removeWebStyle(InjectedScript.StyleID.density)
-            removeWebStyle(InjectedScript.StyleID.accent)
-            removeWebStyle(InjectedScript.StyleID.code)
             return
         }
-        setWebStyle(InjectedScript.StyleID.base, InjectedScript.baseCSS)
-        setWebStyle(InjectedScript.StyleID.code, InjectedScript.codeCSS)
         applyDensity()
-        applyAccent()
     }
     private func applyDensity() {
         if Preferences.webStyling, Preferences.compact {
             setWebStyle(InjectedScript.StyleID.density, InjectedScript.densityCSS)
         } else {
             removeWebStyle(InjectedScript.StyleID.density)
-        }
-    }
-    private func applyAccent() {
-        if Preferences.webStyling, Preferences.accent {
-            setWebStyle(InjectedScript.StyleID.accent, InjectedScript.accentCSS)
-        } else {
-            removeWebStyle(InjectedScript.StyleID.accent)
         }
     }
     private func setWebStyle(_ id: String, _ css: String) {
