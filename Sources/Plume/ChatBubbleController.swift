@@ -122,10 +122,20 @@ struct BubbleConversation {
 /// `isMovableByWindowBackground` does nothing on a borderless window).
 final class BubbleCardPanel: NSPanel {
     init(contentRect: NSRect) {
+        // .nonactivatingPanel is load-bearing for fullscreen overlays: without
+        // it, makeKey / app activation yank Plume's Space forward and the card
+        // sinks behind Claude Desktop (etc.) while the bubbles — which already
+        // use this mask — stay on top.
         super.init(contentRect: contentRect,
-                   styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                   styleMask: [.titled, .closable, .resizable,
+                               .fullSizeContentView, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
+        // Same tier as the avatar bubbles: stays above ordinary app windows on
+        // every Space/display so the card can hop with the chain instead of
+        // sinking into whichever Space last activated it.
+        level = .floating
+        becomesKeyOnlyIfNeeded = true       // key for the composer, not on every click
         hidesOnDeactivate = false           // NSPanel defaults to true
         canHide = false
         isReleasedWhenClosed = false
@@ -146,6 +156,9 @@ final class BubbleCardPanel: NSPanel {
         minSize = NSSize(width: 380, height: 420)
         sharingType = .none                 // keep it out of screen shares
     }
+    /// Still accept keyboard for the WKWebView composer; nonactivatingPanel
+    /// only prevents activating the Plume app / demoting the fullscreen Space.
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
     /// The card is placed onto whichever display the chain lives on. AppKit's
     /// default clamp pins a window to the screen it already occupies — which is
@@ -168,6 +181,7 @@ final class BubblePanel: NSPanel {
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
+        level = .floating
         hidesOnDeactivate = false
         canHide = false
         isReleasedWhenClosed = false
@@ -913,7 +927,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         panel.setFrameOrigin(NSPoint(x: centre.x - Chain.canvas / 2,
                                      y: centre.y - Chain.canvas / 2))
-        panel.orderFront(nil)
+        panel.level = .floating
+        panel.orderFrontRegardless()
     }
 
     /// Manual KVO needs manual teardown — an observed object deallocating with
@@ -1279,7 +1294,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         card.contentView?.layer?.removeAnimation(forKey: "plume.fold")
         card.contentView?.layer?.transform = CATransform3DIdentity
         card.alphaValue = 0
-        card.makeKeyAndOrderFront(nil)
+        // Same path as the bubbles: orderFrontRegardless pins the card above
+        // fullscreen apps on the target display. Do NOT NSApp.activate — that
+        // pulls Plume's Space forward and leaves the card behind Claude/etc.
+        // makeKey alone is enough for the composer thanks to nonactivatingPanel.
+        card.level = .floating
+        card.orderFrontRegardless()
+        card.makeKey()
         // Unfold: a small scale on the content LAYER, mirroring the fold. A
         // window-frame animation would re-lay-out the page on every frame,
         // which is what made the "nice" opening the slow one.
@@ -1301,7 +1322,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             card.animator().alphaValue = 1
         }
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Escape a Swift string for safe interpolation into evaluated JavaScript.
@@ -1422,7 +1442,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         isExpanded = false
         docked = false
         wake()                              // the chain flies home to its column
-        bubbles.forEach { $0.orderFront(nil) }
+        bubbles.forEach { $0.orderFrontRegardless() }
         refreshUnreadFlags()
 
         let duration = 0.13
@@ -1583,6 +1603,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             card.orderOut(nil)
         }
         card.setFrame(dest, display: false)
+        card.level = .floating
+        if card.isVisible { card.orderFrontRegardless() }
         PlumeTrace.log("  positionCard got=\(PlumeTrace.r(card.frame)) screen=\(PlumeTrace.r(card.screen?.frame ?? .zero))")
     }
 
@@ -1702,6 +1724,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private var dragging = false
     private var dragGrabOffset: NSPoint = .zero
     private var dragCursor: NSPoint = .zero
+    /// Card stays on-screen and hops with the avatar chain during a drag that
+    /// started while docked — instead of orderOut'ing and leaving the chat behind.
+    private var cardTravelsWithChain = false
+    private var lastCardTravelScreen: NSScreen?
 
     /// CADisplayLink retains its target and the run loop retains the link, so
     /// `target: self` is a permanent cycle. The proxy is the only way out.
@@ -1806,6 +1832,16 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                 endDrag(velocity: dragFlickVelocity())
             } else {
                 dragTo(p)
+                // Keep the open chat card on the same display as the avatars.
+                if cardTravelsWithChain, card.isVisible, let head = centres.first {
+                    let s = screen(nearest: head)
+                    if s !== lastCardTravelScreen {
+                        lastCardTravelScreen = s
+                        positionCard()
+                        card.orderFrontRegardless()
+                        PlumeTrace.log("  card traveled → \(PlumeTrace.r(s.frame))")
+                    }
+                }
             }
             return
         }
@@ -2002,7 +2038,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // screen association on the old monitor. setFrame forces the hop.
             if panel.screen !== destScreen {
                 panel.setFrame(dest, display: false)
-                if !panel.isVisible { panel.orderFront(nil) }
+                if !panel.isVisible { panel.orderFrontRegardless() }
             } else if snapped != panel.frame.origin {
                 panel.setFrameOrigin(snapped)
             }
@@ -2079,36 +2115,49 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         followCursorScreenIfNeeded()
     }
 
-    /// When the cursor parks on another display, bring the chain there. Without
-    /// this the panels can look like they "jumped" (Spaces / active display)
-    /// while their frames — and therefore the card — stay on the old one.
+    /// When the cursor parks on another display, bring the chain — and the
+    /// floating card, when open — onto that display, matching how the avatar
+    /// bubbles already follow the active screen.
     private func followCursorScreenIfNeeded() {
         guard !dragging, !bubbles.isEmpty, let head = centres.first else {
-            followScreenWork?.cancel(); followScreenWork = nil
             foreignScreenTicks = 0
             return
         }
-        let target = screen(nearest: NSEvent.mouseLocation)
+        let mouse = NSEvent.mouseLocation
+        let target = screen(nearest: mouse)
         let current = screen(nearest: head)
         guard target !== current else {
-            followScreenWork?.cancel(); followScreenWork = nil
             foreignScreenTicks = 0
             return
         }
-        // ~100ms of cursor on the other display (3 ticks at 30 Hz) before we
-        // hop — long enough to cross the seam without teleports mid-gesture,
-        // short enough to feel like the bubbles followed the user.
+        // Ignore the shared edge strip — x≈0 between these two displays was
+        // flipping the chain every few pixels.
+        guard screenInterior(target, contains: mouse, inset: 72) else {
+            foreignScreenTicks = 0
+            return
+        }
         foreignScreenTicks += 1
-        guard foreignScreenTicks >= 3 else { return }
+        if foreignScreenTicks == 1 {
+            PlumeTrace.log("  poll: mouse on OTHER screen mouse=\(PlumeTrace.p(mouse)) head=\(PlumeTrace.p(head))")
+        }
+        guard foreignScreenTicks >= 5 else { return }   // ~160ms at 30 Hz
         foreignScreenTicks = 0
-        PlumeTrace.log("\n===== follow-cursor mouse=\(PlumeTrace.p(NSEvent.mouseLocation)) =====")
+        PlumeTrace.log("\n===== follow-cursor mouse=\(PlumeTrace.p(mouse)) =====")
         if teleportChain(to: target, reason: "follow-cursor") {
-            if docked, card.isVisible {
+            if card.isVisible {
                 positionCard()
-                card.orderFront(nil)
+                card.orderFrontRegardless()
             }
             wake()
         }
+    }
+
+    /// True when `p` sits well inside `screen`'s visible frame, not on the seam.
+    private func screenInterior(_ screen: NSScreen, contains p: NSPoint,
+                                inset: CGFloat) -> Bool {
+        let v = screen.visibleFrame.insetBy(dx: inset, dy: inset)
+        if v.width <= 0 || v.height <= 0 { return screen.frame.contains(p) }
+        return v.contains(p)
     }
 
     /// Recomputed inside `tick` too, because the chain can slide under a cursor
@@ -2151,16 +2200,20 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func beginDrag(_ panel: BubblePanel, grab: NSPoint) {
         guard let i = index(of: panel) else { return }
-        // Dragging a docked head undocks instantly so the chain can leave for
-        // another display — otherwise the row is glued to the card and a
-        // cross-screen drag is a no-op.
+        // Undock the row so the chain can trail the cursor across displays, but
+        // keep the chat card alive and carry it with the avatars.
         if docked {
             collapseWork?.cancel(); collapseWork = nil
-            isExpanded = false
             docked = false
-            card.orderOut(nil)
-            if let wv = webView { wv.removeFromSuperview() }
+            cardTravelsWithChain = card.isVisible
+            lastCardTravelScreen = card.isVisible
+                ? screen(nearest: NSPoint(x: card.frame.midX, y: card.frame.midY))
+                : nil
             anchorTarget = clampedAnchor(centres[i], index: i)
+            PlumeTrace.log("  undock for drag; cardTravels=\(cardTravelsWithChain)")
+        } else {
+            cardTravelsWithChain = false
+            lastCardTravelScreen = nil
         }
         anchorIndex = i
         dragging = true
@@ -2206,14 +2259,56 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                         y: max(-Chain.maxFlick, min(Chain.maxFlick, velocity.y)))
         velocities[a] = v
 
-        // Project first, then pick the screen from the projected point: a flick
-        // aimed at the second display must snap to that display's edge, not the
-        // one the cursor happened to be released over.
+        let mouse = NSEvent.mouseLocation
         let speed = hypot(v.x, v.y)
         let fast = speed >= Chain.flickFloor
-        let px = centres[a].x + (fast ? v.x * Chain.projectTauX : 0)
-        let py = centres[a].y + (fast ? v.y * Chain.projectTauY : 0)
-        let visible = screen(nearest: NSPoint(x: px, y: py)).visibleFrame
+        let headScreen = screen(nearest: centres[a])
+
+        // Landing display — cursor first. During a cross-display drag the head
+        // often still sits on the old monitor while the cursor is already on the
+        // new one; projecting from the head then snaps back to the old edge.
+        var land = screen(nearest: mouse)
+        if land === headScreen,
+           let beyond = screenBeyond(headScreen, velocity: v) {
+            land = beyond
+        }
+        // Dragged to the shared edge but not quite across (trace: release at
+        // x=112 with the portrait monitor starting at x=0). Treat "near the
+        // seam facing another display" as a hop.
+        if land === headScreen,
+           let across = screenAcrossSeam(from: centres[a], cursor: mouse) {
+            land = across
+            PlumeTrace.log("  endDrag SEAM hop → \(PlumeTrace.r(across.frame))")
+        }
+        if land === headScreen {
+            let px = centres[a].x + (fast ? v.x * Chain.projectTauX : 0)
+            let py = centres[a].y + (fast ? v.y * Chain.projectTauY : 0)
+            land = screen(nearest: NSPoint(x: px, y: py))
+        }
+
+        // Hop onto the landing display before choosing the edge, so the spring
+        // target is reachable and commit() reassigns each panel's screen.
+        if land !== headScreen {
+            let old = headScreen.visibleFrame, neu = land.visibleFrame
+            let fy = old.height > 0 ? (centres[a].y - old.minY) / old.height : 0.5
+            let half = Chain.canvas / 2
+            // Enter from the side we came from — park on that edge of `land`.
+            let fromRight = headScreen.frame.midX > land.frame.midX
+            let edgeX = fromRight
+                ? neu.maxX - half - Chain.margin
+                : neu.minX + half + Chain.margin
+            let edgeY = neu.minY + fy * neu.height
+            centres[a] = NSPoint(x: edgeX, y: edgeY)
+            for i in centres.indices where i != a {
+                centres[i] = NSPoint(x: edgeX,
+                                     y: edgeY + CGFloat(a - i) * Chain.step)
+                velocities[i] = .zero
+            }
+            commit()
+            PlumeTrace.log("  endDrag HOP → \(PlumeTrace.r(land.frame)) head=\(PlumeTrace.p(centres[a]))")
+        }
+
+        let visible = land.visibleFrame
         let half = Chain.canvas / 2
         let left = visible.minX + half + Chain.margin
         let right = visible.maxX - half - Chain.margin
@@ -2221,15 +2316,74 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         let below = CGFloat(bubbles.count - 1 - a) * Chain.step
         let loY = visible.minY + half + Chain.margin + below
         let hiY = visible.maxY - half - Chain.margin - above
+        let px = centres[a].x + (fast ? v.x * Chain.projectTauX : 0)
+        let py = centres[a].y + (fast ? v.y * Chain.projectTauY : 0)
         anchorTarget = NSPoint(
             x: px < visible.midX ? left : right,
-            // y is clamped, never snapped: snapping all four corners would take
-            // away the freedom to park the chain at any height. If the chain is
-            // taller than the usable band, top-align so bubble 0 stays visible.
             y: loY <= hiY ? min(max(py, loY), hiY) : hiY)
-        PlumeTrace.log("  dragEnded cursor=\(PlumeTrace.p(NSEvent.mouseLocation)) head=\(PlumeTrace.p(centres[a])) target=\(PlumeTrace.p(anchorTarget)) screen=\(PlumeTrace.r(visible))")
+        PlumeTrace.log("  dragEnded mouse=\(PlumeTrace.p(mouse)) head=\(PlumeTrace.p(centres[a])) target=\(PlumeTrace.p(anchorTarget)) land=\(PlumeTrace.r(visible))")
         dragSamples.removeAll()
+
+        // Redock the chat card under the avatars on whichever display we landed.
+        if cardTravelsWithChain, card.isVisible {
+            cardTravelsWithChain = false
+            lastCardTravelScreen = nil
+            positionCard()
+            docked = true
+            isExpanded = true
+            card.orderFrontRegardless()
+            PlumeTrace.log("  card redocked @ \(PlumeTrace.r(card.frame))")
+        } else {
+            cardTravelsWithChain = false
+            lastCardTravelScreen = nil
+        }
         wake()
+    }
+
+    /// The display just past `current`'s edge in the direction of `v`, if any.
+    /// Lets a flick aimed at the neighbouring monitor land there even when the
+    /// cursor has not quite crossed the seam yet.
+    private func screenBeyond(_ current: NSScreen, velocity v: NSPoint) -> NSScreen? {
+        guard hypot(v.x, v.y) >= 100 else { return nil }
+        let f = current.frame
+        var probe = NSPoint(x: f.midX, y: f.midY)
+        if abs(v.x) >= abs(v.y) {
+            probe.x = v.x < 0 ? f.minX - 40 : f.maxX + 40
+        } else {
+            probe.y = v.y < 0 ? f.minY - 40 : f.maxY + 40
+        }
+        return NSScreen.screens.first { $0 !== current && $0.frame.contains(probe) }
+    }
+
+    /// If the head/cursor sits in the edge strip of `current` that touches
+    /// another display, return that neighbour. Makes "drag to the left edge
+    /// of the laptop" land on the portrait monitor without needing to cross
+    /// into negative coordinates first.
+    private func screenAcrossSeam(from head: NSPoint, cursor: NSPoint) -> NSScreen? {
+        let current = screen(nearest: head)
+        let f = current.frame
+        let seam: CGFloat = 140
+        if head.x <= f.minX + seam || cursor.x <= f.minX + seam {
+            if let s = NSScreen.screens.first(where: {
+                $0 !== current && $0.frame.contains(NSPoint(x: f.minX - 40, y: cursor.y))
+            }) { return s }
+        }
+        if head.x >= f.maxX - seam || cursor.x >= f.maxX - seam {
+            if let s = NSScreen.screens.first(where: {
+                $0 !== current && $0.frame.contains(NSPoint(x: f.maxX + 40, y: cursor.y))
+            }) { return s }
+        }
+        if head.y <= f.minY + seam || cursor.y <= f.minY + seam {
+            if let s = NSScreen.screens.first(where: {
+                $0 !== current && $0.frame.contains(NSPoint(x: cursor.x, y: f.minY - 40))
+            }) { return s }
+        }
+        if head.y >= f.maxY - seam || cursor.y >= f.maxY - seam {
+            if let s = NSScreen.screens.first(where: {
+                $0 !== current && $0.frame.contains(NSPoint(x: cursor.x, y: f.maxY + 40))
+            }) { return s }
+        }
+        return nil
     }
 
     /// The same band `integrate` clamps to. An anchor target outside it can
