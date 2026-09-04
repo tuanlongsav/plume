@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private var chrome: ChromeToolbar!
 
+    /// Bubble mode is restored once per launch, on the first load that
+    /// actually succeeded — `onPageReady`, not `onChromeUpdate`.
+    private var didRestoreMode = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Restore the saved appearance override before any window shows.
         WebViewController.applyAppearance()
@@ -34,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.titleVisibility = .visible
         window.toolbar?.isVisible = Preferences.toolbarVisible   // zero-chrome if off
         controller.onChromeUpdate = { [weak chrome] in chrome?.refresh() }
+        controller.onPageReady = { [weak self] in self?.restoreLastModeIfNeeded() }
         chrome.refresh()
         applyAlwaysOnTop()   // restore the floating-window preference
 
@@ -110,20 +115,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Preferences.toolbarVisible = visible
     }
 
+    @objc private func setBubbleLimit(_ sender: NSMenuItem) {
+        defer { ChatBubbleController.shared?.applyBubbleLimit() }
+        Preferences.bubbleLimit = sender.tag
+    }
+
     /// Bubble mode replaces the main window rather than sitting alongside it:
     /// the whole point is a compact, private surface, so leaving the full
     /// window on screen would defeat it.
     @objc func toggleChatBubble() {
-        if ChatBubbleController.isOpen {
-            exitBubbleMode()
-        } else {
-            ChatBubbleController.show(onExit: { [weak self] in self?.exitBubbleMode() })
-            window.orderOut(nil)
+        if ChatBubbleController.isOpen { exitBubbleMode(); return }
+        enterBubbleMode(announce: true)
+    }
+
+    /// Restore the mode the app was last used in. Silent, and patient: on a
+    /// cold launch Messenger's conversation list is not there yet, so this is
+    /// worth a few quiet retries rather than an alert the user never asked for.
+    private func restoreLastModeIfNeeded() {
+        guard !didRestoreMode else { return }
+        didRestoreMode = true
+        guard Preferences.bubbleMode, !ChatBubbleController.isOpen else { return }
+        enterBubbleMode(announce: false)
+    }
+
+    /// Restoring is patient, which means it can still be pending when the user
+    /// makes their own decision. Every retry re-reads the preference so a
+    /// deliberate "leave bubble mode" is never undone a second later.
+    private var restoreStillWanted: Bool {
+        Preferences.bubbleMode && !ChatBubbleController.isOpen
+    }
+
+    private func enterBubbleMode(announce: Bool, attempt: Int = 0) {
+        controller.fetchConversations(limit: Preferences.bubbleLimit) { [weak self] convos in
+            guard let self, !ChatBubbleController.isOpen else { return }
+            // The user may have decided for themselves while this was in flight.
+            if !announce, !Preferences.bubbleMode { return }
+            // Never hide the main window with nothing to replace it — if the
+            // snapshot came back empty (list still loading, or Messenger's DOM
+            // moved), the app would simply look like it vanished.
+            guard !convos.isEmpty else {
+                if !announce, attempt < 8 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                        guard let self, self.restoreStillWanted else { return }
+                        self.enterBubbleMode(announce: false, attempt: attempt + 1)
+                    }
+                    return
+                }
+                guard announce else { return }   // a restore that fails just stays put
+                let alert = NSAlert()
+                alert.messageText = L.t("Chưa lấy được danh sách hội thoại",
+                                        "Couldn't read your conversation list")
+                alert.informativeText = L.t(
+                    "Hãy đợi Messenger tải xong danh sách hội thoại rồi thử lại.",
+                    "Wait for Messenger's conversation list to finish loading, then try again.")
+                alert.beginSheetModal(for: self.window, completionHandler: nil)
+                return
+            }
+            // Lend the live web view: Messenger is already up in it, so the
+            // first bubble opens instantly instead of booting a second copy.
+            guard let lent = self.controller.lendWebView() else { return }
+            let bubbles = ChatBubbleController.show(
+                conversations: convos,
+                webView: lent,
+                onExit: { [weak self] in self?.exitBubbleMode() })
+            // The main web view stays alive behind the hidden window, so it is
+            // still the source of truth for the picker's list.
+            bubbles.fetchConversations = { [weak self] limit, done in
+                self?.controller.fetchConversations(limit: limit, completion: done)
+            }
+            self.window.orderOut(nil)
+            Preferences.bubbleMode = true
         }
     }
 
     private func exitBubbleMode() {
+        Preferences.bubbleMode = false
         ChatBubbleController.hide()
+        // Unconditional and idempotent: a main window with no web view in it is
+        // the one failure this whole arrangement must never produce.
+        controller.reclaimWebView()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -162,6 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
         case #selector(toggleWebStyling): item.state = controller.isWebStyling ? .on : .off
         case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
+        case #selector(setBubbleLimit(_:)):
+            item.state = Preferences.bubbleLimit == item.tag ? .on : .off
         case #selector(toggleChatBubble):
             item.title = ChatBubbleController.isOpen
                 ? L.t("Về cửa sổ chính", "Back to Main Window")
@@ -280,6 +352,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                             action: #selector(toggleChatBubble), keyEquivalent: "b")
         bubbleItem.keyEquivalentModifierMask = [.command, .option]
         bubbleItem.target = self
+
+        let limitItem = windowMenu.addItem(withTitle: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
+                                           action: nil, keyEquivalent: "")
+        let limitMenu = NSMenu()
+        for n in [3, 5, 8] {
+            let it = limitMenu.addItem(withTitle: "\(n)", action: #selector(setBubbleLimit(_:)),
+                                       keyEquivalent: "")
+            it.tag = n
+            it.target = self
+        }
+        limitItem.submenu = limitMenu
         windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 

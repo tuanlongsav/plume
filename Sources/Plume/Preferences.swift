@@ -37,6 +37,29 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.alwaysOnTop") }
     }
 
+    /// How many contact bubbles the chain may hold, newest first.
+    static var bubbleLimit: Int {
+        get { (defaults.object(forKey: "plume.bubbleLimit") as? Int) ?? 5 }
+        set { defaults.set(max(1, min(newValue, 12)), forKey: "plume.bubbleLimit") }
+    }
+
+    /// Resting diameter of a chat head. Everything else in the chain — the
+    /// magnified size, the panel canvas and the spacing between heads — is
+    /// derived from this, so the chain stays proportioned at any size.
+    static var bubbleSize: CGFloat {
+        get {
+            guard let v = defaults.object(forKey: "plume.bubbleSize") as? Double else { return 46 }
+            return CGFloat(v)
+        }
+        set { defaults.set(Double(max(32, min(newValue, 80))), forKey: "plume.bubbleSize") }
+    }
+
+    /// Was the app in bubble mode when it was last used? Restored on launch.
+    static var bubbleMode: Bool {
+        get { defaults.bool(forKey: "plume.bubbleMode") }
+        set { defaults.set(newValue, forKey: "plume.bubbleMode") }
+    }
+
     /// Conversation keyboard navigation (Caprine port). Defaults to on.
     static var shortcuts: Bool {
         get { defaults.object(forKey: "plume.shortcuts") as? Bool ?? true }

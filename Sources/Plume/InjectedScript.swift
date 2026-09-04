@@ -175,6 +175,174 @@ enum InjectedScript {
             };
         })();
 
+        // --- Open a thread without reloading (chat bubble card) --------
+        // The card keeps one long-lived web view, so switching bubbles must not
+        // reload messenger.com — that rebuilds the entire SPA and takes
+        // seconds. Clicking the conversation's own row is the same transition
+        // the user would make by hand, and it is instant. The row is in the DOM
+        // even though the card clips the list out of sight.
+        window.__plumeOpenThread = function (href) {
+            try {
+                function id(u) {
+                    var p = String(u || "").split("?")[0].replace(/\/+$/, "").split("/");
+                    return p[p.length - 1] || "";
+                }
+                var want = id(href);
+                if (!want) return false;
+                if (id(location.href) === want) return true;      // already there
+                var links = document.querySelectorAll('a[role="link"][href*="/t/"]');
+                for (var i = 0; i < links.length; i++) {
+                    if (id(links[i].href) !== want) continue;
+                    var hit = links[i].querySelector('[role="gridcell"]') || links[i];
+                    hit.click();
+                    return true;
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        // --- Jump to the newest message (chat bubble card) -------------
+        // The shared web view is resized when it moves into the card, and a
+        // virtualised message list keeps its scroll offset across that — which
+        // lands the reader in old history instead of at the latest message.
+        // Called only just after a thread switch, never while reading, so it
+        // cannot fight someone scrolling back through the conversation.
+        window.__plumeScrollToLatest = function () {
+            try {
+                var main = document.querySelector('[role="main"]');
+                if (!main) return false;
+                var best = null, bestOver = 120;
+                var all = main.querySelectorAll('div');
+                for (var i = 0; i < all.length; i++) {
+                    var e = all[i];
+                    var over = e.scrollHeight - e.clientHeight;
+                    if (over <= bestOver) continue;
+                    var oy = window.getComputedStyle(e).overflowY;
+                    if (oy !== 'auto' && oy !== 'scroll') continue;
+                    best = e; bestOver = over;
+                }
+                if (!best) return false;
+                best.scrollTop = best.scrollHeight;
+                return true;
+            } catch (e) { return false; }
+        };
+
+        // --- Skip link (chat bubble card) ------------------------------
+        // Messenger's "skip to main content" anchor is revealed on focus and
+        // sits over the conversation in a card-sized viewport. Matched by its
+        // accessible text rather than a class, and only among in-page anchors,
+        // so nothing else can be caught by it.
+        window.__plumeHideSkipLinks = function () {
+            var phrases = ["chuyen den noi dung chinh", "skip to main content",
+                           "chuyen toi noi dung chinh"];
+            function norm(s) {
+                // đ/Đ (U+0111/U+0110) have NO canonical decomposition, so NFD
+                // leaves them intact and a plain-ASCII phrase list never
+                // matched the Vietnamese label. Fold them by hand.
+                return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                    .replace(/[\u0111\u0110]/g, "d")
+                    .replace(/\s+/g, " ").trim().toLowerCase();
+            }
+            var n = 0;
+            try {
+                var links = document.querySelectorAll('a[href^="#"], a[href=""], [role="link"][href^="#"]');
+                for (var i = 0; i < links.length; i++) {
+                    var t = norm(links[i].innerText || links[i].textContent);
+                    if (phrases.indexOf(t) >= 0) {
+                        links[i].style.setProperty("display", "none", "important");
+                        n++;
+                    }
+                }
+            } catch (e) {}
+            return n;
+        };
+
+        // --- Conversation list snapshot (chat bubbles) -----------------
+        // Read ON DEMAND only — never an observer — so it costs nothing while
+        // idle. Role/attr hooks only, so Meta's hashed class churn cannot break
+        // it.
+        //
+        // NOTE ON WHAT THIS READS: name, avatar, unread flag, the last
+        // message's first 80 characters, and the relative timestamp. The
+        // preview IS message content: it is shown in the picker and searched
+        // there, and it never leaves the machine. Collapsed bubbles still show
+        // no message text — that is what the chat heads are for.
+        window.__plumeConvList = function (limit) {
+            var out = [];
+            try {
+                var rows = document.querySelectorAll('[role="row"]');
+                for (var i = 0; i < rows.length && out.length < limit; i++) {
+                    var r = rows[i];
+                    if (r.closest('[role="main"]')) continue;   // skip the open thread
+                    var link = r.querySelector('a[role="link"][href]');
+                    if (!link || link.href.indexOf('/t/') === -1) continue;
+                    var img = r.querySelector('img');
+                    // Read the row's own lines rather than slicing the
+                    // aria-label at its first comma: a group thread is named
+                    // "An, Bình, Chi", so that split named the bubble "An" and
+                    // left the rest of the group's name standing in for the
+                    // last message.
+                    var label = "", preview = "", time = "";
+                    try {
+                        var t = (r.innerText || "").split("\n")
+                                 .map(function (x) { return x.trim(); })
+                                 .filter(Boolean);
+                        label = t[0] || "";
+                        var rest = t.slice(1);
+                        preview = (rest[0] || "").slice(0, 80);
+                        // The timestamp is the last SHORT line that reads as a
+                        // duration or a clock time. Matching on shape, not on
+                        // position: some rows end with a suggested reply
+                        // ("Trả lời?"), which is not a timestamp.
+                        var stampish = /^(\d{1,2}:\d{2}|\d+\s*(phút|giờ|ngày|tuần|năm|thg|m|h|d|w|y))$/i;
+                        for (var k = rest.length - 1; k >= 0; k--) {
+                            var cand = rest[k];
+                            if (cand !== preview && cand.length <= 14 && stampish.test(cand)) {
+                                time = cand; break;
+                            }
+                        }
+                    } catch (e) {}
+                    if (!label) {
+                        // innerText empty (virtualised row): fall back to the
+                        // accessible name, which for a 1:1 chat is just a name.
+                        label = (link.getAttribute('aria-label') || '').split(',')[0];
+                    }
+                    label = String(label).trim().slice(0, 60);
+
+                    // Unread. The accessible label carries it in some locales
+                    // and not others — on a Vietnamese UI it never appears, so
+                    // this also reads the styling Messenger actually uses: an
+                    // unread row's preview line is rendered semibold, a read
+                    // one regular.
+                    var unread = !!r.querySelector(
+                        '[aria-label*="unread" i], [aria-label*="chưa đọc" i]');
+                    if (!unread && preview) {
+                        try {
+                            var probe = preview.slice(0, 12);
+                            var nodes = r.querySelectorAll('[dir="auto"], span');
+                            for (var q = 0; q < nodes.length; q++) {
+                                var txt = (nodes[q].textContent || "").trim();
+                                if (!txt || txt.indexOf(probe) !== 0) continue;
+                                var fw = parseInt(
+                                    window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
+                                if (fw >= 600) unread = true;
+                                break;
+                            }
+                        } catch (e) {}
+                    }
+                    out.push({
+                        href: link.href,
+                        name: label,
+                        preview: preview,
+                        time: time,
+                        avatar: img ? img.src : "",
+                        unread: unread
+                    });
+                }
+            } catch (e) { /* DOM shifted — return whatever we got */ }
+            return JSON.stringify(out);
+        };
+
         // Note: the unread badge is derived natively by observing WKWebView's
         // `title` (a public, injection-independent signal), so there is no
         // badge bridge here.
@@ -195,21 +363,18 @@ enum InjectedScript {
     /// starved new-message updates. Both were removed; don't reintroduce them.
     enum StyleID {
         static let density = "plume-density" // compact
-        static let bubbleSidebar = "plume-bubble-sidebar" // chat bubble only
     }
 
     /// Compact conversation/message density (only active when Compact is on).
     /// Padding only — the former `min-height` on every gridcell was dropped: a
     /// forced height on rows of a virtualised list fights its own measurement.
-    /// Chat-bubble only: hide Messenger's conversation list so the panel shows
-    /// just the open thread. Needed for the bubble's privacy goal — at narrow
-    /// widths Messenger only collapses the sidebar to an icon rail that still
-    /// shows contact avatars. One rule, and `[role="navigation"]` matches a
-    /// handful of nodes, so it stays within the performance rule above.
-    static let hideSidebarCSS = """
-    [role="navigation"] { display: none !important; }
-    """
-
+    ///
+    /// There is deliberately no rule here for the chat-bubble card. Hiding
+    /// Messenger's sidebar with CSS cannot work: the page reserves the icon
+    /// rail (44pt) and the conversation list (356pt) first and gives the
+    /// conversation only what is left, so at a card-sized viewport
+    /// `[role="main"]` measures 0pt tall and there is nothing left to reveal.
+    /// The card gives the page a wide viewport and clips the chrome instead.
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
     [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }

@@ -39,6 +39,8 @@ final class WebViewController: NSViewController {
 
     /// Toolbar refreshes its button states through this after any nav change.
     var onChromeUpdate: (() -> Void)?
+    /// Fired once, after the first load that actually succeeded.
+    var onPageReady: (() -> Void)?
 
     override func loadView() {
         let config = WKWebViewConfiguration()
@@ -214,6 +216,52 @@ final class WebViewController: NSViewController {
         webView.evaluateJavaScript("window.__plumeActivateNotification(\(id))", completionHandler: nil)
     }
 
+    // MARK: Lending the web view to the chat bubble card
+
+    /// Hand the live web view to the bubble card.
+    ///
+    /// The card used to run a second WKWebView, which meant loading the whole
+    /// Messenger app again — seconds of waiting on the first bubble opened, and
+    /// two copies rendering from then on. There is only ever one conversation
+    /// on screen, so there only needs to be one web view; it simply moves.
+    func lendWebView() -> WKWebView? {
+        guard let wv = webView, wv.superview === view else { return webView }
+        wv.removeFromSuperview()
+        return wv
+    }
+
+    /// Take it back. Idempotent, and safe to call even if it was never lent —
+    /// a main window with no web view in it is the one failure worth ruling out.
+    func reclaimWebView() {
+        guard let wv = webView, wv.superview !== view else { return }
+        wv.removeFromSuperview()
+        wv.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(wv, positioned: .below, relativeTo: view.subviews.first)
+        NSLayoutConstraint.activate([
+            wv.topAnchor.constraint(equalTo: view.topAnchor),
+            wv.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            wv.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            wv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    // MARK: Conversation snapshot (chat bubbles)
+
+    /// Read Messenger's conversation list once, on demand. Deliberately a
+    /// snapshot and not an observer: the bubbles only need this when they are
+    /// built or when the picker opens, and a live observer over this DOM is
+    /// precisely the kind of thing that made the app crawl before.
+    func fetchConversations(limit: Int,
+                            completion: @escaping ([BubbleConversation]) -> Void) {
+        webView.evaluateJavaScript("window.__plumeConvList(\(max(1, limit)))") { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let raw = try? JSONDecoder().decode([BubbleConversation.Raw].self, from: data)
+            else { completion([]); return }
+            completion(raw.compactMap(BubbleConversation.init(raw:)))
+        }
+    }
+
     // MARK: Conversation navigation (Caprine port)
 
     private func runConvJS(_ call: String) {
@@ -387,6 +435,12 @@ extension WebViewController: WKNavigationDelegate {
         setLoading(false)
         applyWebTheme()
         onChromeUpdate?()
+        // Deliberately separate from onChromeUpdate: that also fires on a load
+        // FAILURE (handleLoadFailure calls it), and anything hooked there for
+        // "the page is ready" would burn its one shot while offline.
+        let ready = onPageReady
+        onPageReady = nil
+        ready?()
     }
 
     // A failed *provisional* load (DNS/offline/TLS before any content).
