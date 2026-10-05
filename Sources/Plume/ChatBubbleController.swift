@@ -2,17 +2,20 @@ import AppKit
 import QuartzCore
 import WebKit
 
-// TEMPORARY: diagnosing the multi-display card placement. Remove once fixed.
+// Diagnostic multi-display traces. No-op in release so notarized builds never
+// write contact names / cursor positions to ~/plume-trace.log.
 enum PlumeTrace {
     static let url = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("plume-trace.log")
     static func log(_ line: String) {
+        #if DEBUG
         guard let d = (line + "\n").data(using: .utf8) else { return }
         if let h = try? FileHandle(forWritingTo: url) {
             h.seekToEndOfFile(); h.write(d); try? h.close()
         } else {
             try? d.write(to: url)
         }
+        #endif
     }
     static func r(_ r: NSRect) -> String {
         String(format: "(%.0f,%.0f %.0fx%.0f)", r.minX, r.minY, r.width, r.height)
@@ -20,9 +23,70 @@ enum PlumeTrace {
     static func p(_ p: NSPoint) -> String { String(format: "(%.0f,%.0f)", p.x, p.y) }
 }
 
+/// Window level + Space membership for bubbles and the chat card.
+///
+/// `.statusWindow` / `.floating` sit *below* another app's fullscreen content.
+/// `.screenSaver` is what actually stacks above a fullscreen Space; combined
+/// with `fullScreenAuxiliary` + `canJoinAllSpaces` the panel joins that Space
+/// instead of staying on the desktop Space behind it.
+private enum PlumeOverlay {
+    static let level = NSWindow.Level.screenSaver
+
+    static var collectionBehavior: NSWindow.CollectionBehavior {
+        var b: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle
+        ]
+        if #available(macOS 15.0, *) {
+            b.insert(.canJoinAllApplications)
+        }
+        return b
+    }
+
+    static func apply(to window: NSWindow) {
+        window.level = level
+        window.collectionBehavior = collectionBehavior
+        window.hidesOnDeactivate = false
+    }
+}
+
+/// Raises AppKit menu windows above Plume's `.screenSaver` bubbles. Without
+/// this, `NSMenu.popUp` opens at `.popUpMenu` (~101) and is invisible under
+/// the chain — which looks exactly like "right-click does nothing".
+private final class ChipMenuLift: NSObject, NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        ChipMenuLift.elevateOpenMenus()
+        // Submenus / delayed presentation need another pass next turn.
+        DispatchQueue.main.async { ChipMenuLift.elevateOpenMenus() }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {}
+
+    static func elevateOpenMenus() {
+        let target = NSWindow.Level(rawValue: PlumeOverlay.level.rawValue + 1)
+        for window in NSApp.windows {
+            let lvl = window.level.rawValue
+            // Default menu / submenu windows; also catch private NSMenu subclasses.
+            if lvl == NSWindow.Level.popUpMenu.rawValue
+                || lvl == NSWindow.Level.tornOffMenu.rawValue
+                || window.className.contains("Menu") {
+                window.level = target
+                window.collectionBehavior = PlumeOverlay.collectionBehavior
+                window.hidesOnDeactivate = false
+                window.orderFrontRegardless()
+            }
+        }
+    }
+}
+
 extension Notification.Name {
     /// Posted by the main web view whenever the dock badge changes.
     static let plumeUnreadChanged = Notification.Name("plume.unreadChanged")
+    /// Posted when Messenger's in-page photo/video theater opens or closes
+    /// inside the bubble card (`userInfo["open"]` as Bool).
+    static let plumeCardMedia = Notification.Name("plume.cardMedia")
+    /// User tapped a conversation image while the bubble card is active —
+    /// `userInfo["url"]` is a URL for the native in-card photo viewer.
+    static let plumeOpenImage = Notification.Name("plume.openImage")
 }
 
 // MARK: - Avatar cache
@@ -131,12 +195,8 @@ final class BubbleCardPanel: NSPanel {
                                .fullSizeContentView, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
-        // Same tier as the avatar bubbles: stays above ordinary app windows on
-        // every Space/display so the card can hop with the chain instead of
-        // sinking into whichever Space last activated it.
-        level = .floating
+        PlumeOverlay.apply(to: self)
         becomesKeyOnlyIfNeeded = true       // key for the composer, not on every click
-        hidesOnDeactivate = false           // NSPanel defaults to true
         canHide = false
         isReleasedWhenClosed = false
         isExcludedFromWindowsMenu = true
@@ -151,8 +211,6 @@ final class BubbleCardPanel: NSPanel {
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                              .stationary, .ignoresCycle]
         minSize = NSSize(width: 380, height: 420)
         sharingType = .none                 // keep it out of screen shares
     }
@@ -181,8 +239,7 @@ final class BubblePanel: NSPanel {
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
-        level = .floating
-        hidesOnDeactivate = false
+        PlumeOverlay.apply(to: self)
         canHide = false
         isReleasedWhenClosed = false
         isExcludedFromWindowsMenu = true
@@ -195,8 +252,6 @@ final class BubblePanel: NSPanel {
         // shadow is derived from the backing store's alpha once, so it would
         // keep the resting circle's outline while the circle magnifies.
         hasShadow = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                              .stationary, .ignoresCycle]
         sharingType = .none
     }
     override var canBecomeKey: Bool { false }
@@ -205,6 +260,86 @@ final class BubblePanel: NSPanel {
     /// back an origin other than the one just computed.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
+    }
+}
+
+/// A thin cord from the open bubble down to the chat card — shows which head
+/// owns the window. Ignores mouse so it never steals clicks from the chips.
+final class BubbleTetherPanel: NSPanel {
+    private let tether = TetherView(frame: .zero)
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 8, height: 8),
+                   styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        isFloatingPanel = true
+        PlumeOverlay.apply(to: self)
+        canHide = false
+        isReleasedWhenClosed = false
+        isExcludedFromWindowsMenu = true
+        tabbingMode = .disallowed
+        animationBehavior = .none
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        sharingType = .none
+        contentView = tether
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
+    /// `from` = bubble attachment (screen), `to` = card attachment (screen).
+    func update(from: NSPoint, to: NSPoint) {
+        let pad: CGFloat = 16
+        let minX = min(from.x, to.x) - pad
+        let minY = min(from.y, to.y) - pad
+        let w = max(max(from.x, to.x) - minX + pad, 4)
+        let h = max(max(from.y, to.y) - minY + pad, 4)
+        let frame = NSRect(x: minX, y: minY, width: w, height: h)
+        setFrame(frame, display: false)
+        tether.start = NSPoint(x: from.x - minX, y: from.y - minY)
+        tether.end = NSPoint(x: to.x - minX, y: to.y - minY)
+        tether.needsDisplay = true
+        // Don't orderFront every frame — that reshuffles the bubble stack and
+        // can leave heads behind the card. Only assert when first shown.
+        if !isVisible { orderFrontRegardless() }
+    }
+
+    func hide() { orderOut(nil) }
+}
+
+private final class TetherView: NSView {
+    var start: NSPoint = .zero
+    var end: NSPoint = .zero
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath()
+        path.move(to: start)
+        // Soft cord: bow slightly toward the midpoint so it reads as a string,
+        // not a rigid ruler.
+        let mid = NSPoint(x: (start.x + end.x) / 2,
+                          y: (start.y + end.y) / 2)
+        let ctrl1 = NSPoint(x: start.x, y: mid.y)
+        let ctrl2 = NSPoint(x: end.x, y: mid.y)
+        path.curve(to: end, controlPoint1: ctrl1, controlPoint2: ctrl2)
+        NSColor.controlAccentColor.withAlphaComponent(0.55).setStroke()
+        path.lineWidth = 2
+        path.lineCapStyle = .round
+        path.stroke()
+
+        let dot: CGFloat = 5
+        for p in [start, end] {
+            let r = NSRect(x: p.x - dot / 2, y: p.y - dot / 2, width: dot, height: dot)
+            NSColor.controlAccentColor.withAlphaComponent(0.75).setFill()
+            NSBezierPath(ovalIn: r).fill()
+        }
     }
 }
 
@@ -218,20 +353,15 @@ enum Chain {
     // scale → layout → distance → scale feedback loop the real Dock must fight.
     /// Resting circle — the one number the user sets.
     static var base: CGFloat { Preferences.bubbleSize }
-    /// Circle under the cursor. 26% is enough to read as Dock magnification
-    /// without the head swallowing its neighbours.
-    static var peak: CGFloat { (base * 1.26).rounded() }
-    /// Panel edge. Equal to `peak` for the life of a panel.
+    /// Circle under the cursor. 2× so the hovered head clearly dominates its
+    /// neighbours (Dock-strong); the neighbour weight below keeps them modest.
+    static var peak: CGFloat { (base * 2.0).rounded() }
+    /// Panel edge. Equal to `peak` for the life of a panel so magnification
+    /// never clips — independent of how tightly the chain is packed.
     static var canvas: CGFloat { peak }
-    /// Centre-to-centre, and therefore the gap: derived from the canvas, so
-    /// resizing the heads never leaves them crammed together or adrift.
-    ///
-    /// Deliberately == canvas: overlapping panels would need
-    /// `ignoresMouseEvents` toggled from cursor position to let clicks through
-    /// their dead corners, and a bubble you cannot click is a far worse bug
-    /// than a slightly airier chain. Non-overlapping panels make "a bubble
-    /// never opens someone else's chat" a property of the geometry.
-    static var step: CGFloat { canvas }
+    /// Centre-to-centre at rest — nearly touching (≈4pt edge gap), independent
+    /// of Dock magnification.
+    static var step: CGFloat { (base + 4).rounded() }
     static let margin: CGFloat = 6         // gap to visibleFrame at rest
 
     /// Anchor spring — the released bubble flying to the edge.
@@ -243,7 +373,6 @@ enum Chain {
     /// down the chain makes it unfurl instead of sliding rigidly.
     static let trailZeta: CGFloat = 0.8
     static func trailTau(_ k: Int) -> CGFloat { 0.050 + 0.008 * CGFloat(min(k, 5) - 1) }
-    static var maxLink: CGFloat { step * 1.6 }   // rope cap on the spread
 
     static let dtMin: CGFloat = 1.0 / 240
     static let dtMax: CGFloat = 1.0 / 30   // ω·dt ≤ 1.07 at the stiffest link
@@ -260,9 +389,63 @@ enum Chain {
     static let projectTauY: CGFloat = 0.06
     static let dragSlop: CGFloat = 3
 
-    /// Dock magnification: raised cosine, so there is no kink at the rim.
-    static var magRadius: CGFloat { step * 2.6 }
-    static let magRate: CGFloat = 22
+    /// Unused for slot-based Dock weights; kept as the "near column" hit slop.
+    static var magRadius: CGFloat { step * 1.5 }
+    /// Constant visual edge gap while packing (rest and magnified).
+    static var magGap: CGFloat { step - base }
+    /// Centre-to-centre between two live diameters (Dock packing).
+    static func linkSpacing(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        (a + b) / 2 + magGap
+    }
+
+    /// X centres of a docked row: packed left-to-right, then centered on `card`.
+    /// If the row is wider than the card it pins to the right inset (same as
+    /// before) and is then nudged onto `visible` so a head never leaves the screen.
+    static func dockedRowXs(diameters: [CGFloat], card: CGRect,
+                            visible: CGRect, pad: CGFloat = 8) -> [CGFloat] {
+        guard !diameters.isEmpty else { return [] }
+        var xs: [CGFloat] = []
+        xs.reserveCapacity(diameters.count)
+        for i in diameters.indices {
+            if i == 0 {
+                xs.append(diameters[i] / 2)
+            } else {
+                xs.append(xs[i - 1] + linkSpacing(diameters[i - 1], diameters[i]))
+            }
+        }
+        let last = xs.count - 1
+        let groupWidth = xs[last] + diameters[last] / 2
+        let innerLeft = card.minX + pad
+        let innerRight = card.maxX - pad
+        let innerWidth = innerRight - innerLeft
+        var origin = card.midX - groupWidth / 2
+        if groupWidth <= innerWidth {
+            origin = min(max(origin, innerLeft), innerRight - groupWidth)
+        } else {
+            origin = innerLeft
+        }
+        for i in xs.indices { xs[i] += origin }
+
+        let overflow = xs[last] + diameters[last] / 2 + pad - card.maxX
+        if overflow > 0 {
+            for i in xs.indices { xs[i] -= overflow }
+        }
+        let minAllowed = visible.minX + peak / 2 + 2
+        if let first = xs.first, first < minAllowed {
+            let dx = minAllowed - first
+            for i in xs.indices { xs[i] += dx }
+        }
+        return xs
+    }
+    /// Fraction of (peak−base) for the adjacent slot. Low enough that the
+    /// neighbour never reads as "almost as big" as the hovered head.
+    static let magNeighbour: CGFloat = 0.26
+    static let magNextNeighbour: CGFloat = 0.05
+    /// While the card is open, the owning head stays at least this large even
+    /// when the pointer is over a neighbour — so you can see which chat is live.
+    static let openBoost: CGFloat = 0.62
+    /// Higher = snappier hover response (settles in ~3–4 frames at 120Hz).
+    static let magRate: CGFloat = 36
     static let magEpsilon: CGFloat = 0.05
     static let pressScale: CGFloat = 0.93
 
@@ -490,13 +673,15 @@ final class BubbleChipView: NSView {
     // A non-key window withholds mouseDown unless the hit view opts in.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The whole canvas is live. `step == canvas`, so panels never overlap and
-    /// a forgiving square target cannot steal a neighbour's click — while a
-    /// circular test would leave dead corners that swallow clicks outright,
-    /// since a nil hitTest does not fall through to the window below.
+    /// Circular hit against the *visible* head. Panels are `peak`-sized and
+    /// can overlap when `step < canvas`; a square hit would let the upper
+    /// window's empty corners swallow clicks meant for the neighbour below.
+    /// Returning nil here lets the event fall through to the next bubble window.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        return bounds.contains(local) ? self : nil
+        let c = Chain.peak / 2
+        let r = max(diameter, Chain.base) / 2
+        return hypot(local.x - c, local.y - c) <= r ? self : nil
     }
 
     private var downAt: NSPoint = .zero
@@ -504,6 +689,11 @@ final class BubbleChipView: NSView {
     private var didDrag = false
 
     override func mouseDown(with event: NSEvent) {
+        // Control-click is a secondary click on macOS (trackpad / older mice).
+        if event.modifierFlags.contains(.control), onSecondaryClick != nil {
+            onSecondaryClick?(convert(event.locationInWindow, from: nil))
+            return
+        }
         downAt = NSEvent.mouseLocation
         samples = [(downAt, CACurrentMediaTime())]
         didDrag = false
@@ -537,7 +727,8 @@ final class BubbleChipView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         guard onSecondaryClick != nil else { super.rightMouseDown(with: event); return }
-        onSecondaryClick?(convert(event.locationInWindow, from: nil))
+        // Monitors own the menu now (they can lift it above `.screenSaver`
+        // bubbles). Ignore the view path so we don't double-present.
     }
     override func menu(for event: NSEvent) -> NSMenu? { nil }   // we drive it ourselves
 
@@ -562,8 +753,12 @@ final class BubbleChipView: NSView {
 final class ConversationRow: NSView {
     let conversation: BubbleConversation
     var onPick: ((BubbleConversation) -> Void)?
+    /// Right-click → "Delete Chat…". No menu at all while this is nil.
+    var onDelete: ((BubbleConversation) -> Void)?
+    private static let menuLift = ChipMenuLift()
     private let avatarView = NSImageView()
     private let initialsLabel = NSTextField(labelWithString: "")
+    private var highlighted = false
 
     init(conversation: BubbleConversation) {
         self.conversation = conversation
@@ -571,6 +766,7 @@ final class ConversationRow: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 8
+        layer?.backgroundColor = NSColor.clear.cgColor
 
         avatarView.wantsLayer = true
         avatarView.layer?.cornerRadius = 28
@@ -645,37 +841,34 @@ final class ConversationRow: NSView {
     }
 
     override func mouseUp(with event: NSEvent) { onPick?(conversation) }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard onDelete != nil else { super.rightMouseDown(with: event); return }
+        let menu = NSMenu()
+        // The card floats at the overlay tier; a plain menu opens beneath it.
+        menu.delegate = Self.menuLift
+        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
+                              action: #selector(deleteTapped), keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        menu.addItem(item)
+        menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+    }
+
+    @objc private func deleteTapped() { onDelete?(conversation) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    private var tracker: NSTrackingArea?
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracker { removeTrackingArea(tracker) }
-        // .inVisibleRect: AppKit keeps the tracking rect in step with the row's
-        // real frame. A fixed `bounds` rect is captured before Auto Layout has
-        // placed the row and never follows it as the list scrolls, which is how
-        // a row lights up under a cursor that is nowhere near it.
-        let t = NSTrackingArea(rect: .zero,
-                               options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                               owner: self, userInfo: nil)
-        addTrackingArea(t); tracker = t
-    }
-    override func mouseEntered(with event: NSEvent) { setHighlighted(true) }
-    override func mouseExited(with event: NSEvent) { setHighlighted(false) }
-
-    /// Trust the pointer, not just the event: rows are rebuilt whenever the
-    /// filter changes, and a freshly built row can inherit an enter it never
-    /// earned.
-    func syncHighlight() {
-        guard let window else { setHighlighted(false); return }
-        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        setHighlighted(bounds.contains(p))
-    }
-
-    private func setHighlighted(_ on: Bool) {
+    /// List-owned hover: rows do not track enter/exit themselves. Scrolling
+    /// moves rows under a still cursor without those events, which left a
+    /// stale highlight ("ghost") on the wrong row.
+    func setHighlighted(_ on: Bool) {
+        guard on != highlighted else { return }
+        highlighted = on
+        // Never assign nil — on a layer-backed view that can leave the previous
+        // fill composited as a translucent smear while scrolling.
         layer?.backgroundColor = on
             ? NSColor.labelColor.withAlphaComponent(0.08).cgColor
-            : nil
+            : NSColor.clear.cgColor
     }
 }
 
@@ -693,10 +886,18 @@ private final class FlippedView: NSView {
 /// field, then 72pt rows.
 final class ConversationListView: NSView {
     var onPick: ((BubbleConversation) -> Void)?
+    /// Right-click → "Delete Chat…" on a row.
+    var onDelete: ((BubbleConversation) -> Void)?
+    /// Footer action: ask the controller for an older page of the inbox.
+    var onLoadMore: (() -> Void)?
     private let stack = NSStackView()
     private let search = NSSearchField()
     private weak var scroll: NSScrollView?
     private var all: [BubbleConversation] = []
+    private var hoverTracker: NSTrackingArea?
+    private var canLoadMore = false
+    private var loadMoreBusy = false
+    private let loadMoreButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -733,11 +934,30 @@ final class ConversationListView: NSView {
         stack.spacing = 2
         stack.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 8, right: 0)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        loadMoreButton.bezelStyle = .flexiblePush
+        loadMoreButton.isBordered = true
+        loadMoreButton.font = .systemFont(ofSize: 13, weight: .semibold)
+        loadMoreButton.target = self
+        loadMoreButton.action = #selector(loadMoreTapped)
+        loadMoreButton.translatesAutoresizingMaskIntoConstraints = false
+        loadMoreButton.setButtonType(.momentaryPushIn)
+        loadMoreButton.controlSize = .regular
         let clip = FlippedView()
         clip.translatesAutoresizingMaskIntoConstraints = false
         clip.addSubview(stack)
         scroll.documentView = clip
         addSubview(scroll)
+
+        // Hover is owned here (not per-row tracking). Scrolling under a still
+        // cursor never fires mouseExited on the old row; clip bounds + live
+        // scroll + mouseMoved all re-resolve the lit row from the pointer.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollClipMoved),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollClipMoved),
+            name: NSScrollView.didLiveScrollNotification, object: scroll)
 
         NSLayoutConstraint.activate([
             backdrop.topAnchor.constraint(equalTo: topAnchor),
@@ -763,35 +983,233 @@ final class ConversationListView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func set(_ conversations: [BubbleConversation]) {
-        all = conversations
-        render()
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
-    @objc private func filterChanged() { render() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracker { removeTrackingArea(hoverTracker) }
+        let t = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(t)
+        hoverTracker = t
+    }
 
-    private func render() {
+    override func mouseMoved(with event: NSEvent) { syncRowHighlights() }
+    override func mouseEntered(with event: NSEvent) { syncRowHighlights() }
+    override func mouseExited(with event: NSEvent) { clearRowHighlights() }
+
+    func set(_ conversations: [BubbleConversation],
+             canLoadMore: Bool = false,
+             preserveScroll: Bool = false) {
+        all = conversations
+        self.canLoadMore = canLoadMore
+        render(preserveScroll: preserveScroll)
+    }
+
+    func setLoadMoreBusy(_ busy: Bool) {
+        loadMoreBusy = busy
+        refreshLoadMoreTitle()
+    }
+
+    @objc private func filterChanged() { render(preserveScroll: true) }
+
+    @objc private func loadMoreTapped() {
+        guard canLoadMore, !loadMoreBusy else { return }
+        onLoadMore?()
+    }
+
+    private func refreshLoadMoreTitle() {
+        let title = loadMoreBusy
+            ? L.t("Đang tải…", "Loading…")
+            : L.t("Xem thêm đoạn chat…", "Load more chats…")
+        loadMoreButton.title = title
+        loadMoreButton.isEnabled = canLoadMore && !loadMoreBusy
+        loadMoreButton.alphaValue = loadMoreBusy ? 0.55 : 1
+    }
+
+    private func render(preserveScroll: Bool = false) {
+        let savedY = scroll?.contentView.bounds.origin.y ?? 0
         let q = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-        let shown = q.isEmpty ? all : all.filter {
+        let filtering = !q.isEmpty
+        let shown = filtering ? all.filter {
             $0.name.lowercased().contains(q) || $0.preview.lowercased().contains(q)
-        }
+        } : all
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for convo in shown {
             let row = ConversationRow(conversation: convo)
             row.onPick = { [weak self] c in self?.onPick?(c) }
+            row.onDelete = { [weak self] c in self?.onDelete?(c) }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
-        // Settle scroll position and highlight once the rows have frames.
+        // Footer only on the unfiltered inbox — search already narrows `all`.
+        if canLoadMore, !filtering {
+            refreshLoadMoreTitle()
+            let wrap = NSView()
+            wrap.translatesAutoresizingMaskIntoConstraints = false
+            wrap.addSubview(loadMoreButton)
+            NSLayoutConstraint.activate([
+                wrap.heightAnchor.constraint(equalToConstant: 52),
+                loadMoreButton.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
+                loadMoreButton.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+                loadMoreButton.leadingAnchor.constraint(greaterThanOrEqualTo: wrap.leadingAnchor, constant: 16),
+                loadMoreButton.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor, constant: -16),
+                loadMoreButton.heightAnchor.constraint(equalToConstant: 32),
+            ])
+            stack.addArrangedSubview(wrap)
+            wrap.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.scroll?.documentView?.scroll(.zero)
-            self.scroll?.reflectScrolledClipView(self.scroll!.contentView)
-            self.stack.arrangedSubviews
-                .compactMap { $0 as? ConversationRow }
-                .forEach { $0.syncHighlight() }
+            if preserveScroll {
+                self.scroll?.documentView?.scroll(NSPoint(x: 0, y: savedY))
+            } else {
+                self.scroll?.documentView?.scroll(.zero)
+            }
+            if let scroll = self.scroll {
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            self.syncRowHighlights()
         }
     }
+
+    @objc private func scrollClipMoved() { syncRowHighlights() }
+
+    private func clearRowHighlights() {
+        stack.arrangedSubviews
+            .compactMap { $0 as? ConversationRow }
+            .forEach { $0.setHighlighted(false) }
+    }
+
+    private func syncRowHighlights() {
+        guard let window else { clearRowHighlights(); return }
+        let winP = window.mouseLocationOutsideOfEventStream
+        let clip = scroll?.contentView
+        for case let row as ConversationRow in stack.arrangedSubviews {
+            let p = row.convert(winP, from: nil)
+            var on = row.bounds.contains(p)
+            if on, let clip {
+                let inClip = clip.convert(winP, from: nil)
+                on = clip.bounds.contains(inClip)
+                let rowInClip = row.convert(row.bounds, to: clip)
+                on = on && rowInClip.intersects(clip.bounds)
+            }
+            row.setHighlighted(on)
+        }
+    }
+}
+
+// MARK: - In-card photo viewer
+
+private final class PassthroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Full-bleed black overlay centred in the bubble *card* (not the chrome-clipped
+/// web view). Messenger's own theatre always looks left-shifted here.
+private final class CardPhotoOverlay: NSView {
+    var onClose: (() -> Void)?
+    private let imageView = PassthroughImageView()
+    private let closeButton = NSButton()
+    private var loadTask: URLSessionDataTask?
+    private var keyMonitor: Any?
+    private var cookieSession: URLSession?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.94).cgColor
+
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.imageAlignment = .alignCenter
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+
+        closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill",
+                                    accessibilityDescription: "Close")
+        closeButton.bezelStyle = .inline
+        closeButton.isBordered = false
+        closeButton.contentTintColor = .white
+        closeButton.target = self
+        closeButton.action = #selector(close)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(closeButton)
+
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 36),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            closeButton.widthAnchor.constraint(equalToConstant: 28),
+            closeButton.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // Escape
+                self?.close()
+                return nil
+            }
+            return event
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        loadTask?.cancel()
+        cookieSession?.invalidateAndCancel()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    }
+
+    func display(_ image: NSImage) {
+        imageView.image = image
+    }
+
+    /// Load via a URLSession seeded with the web view's cookies so fbcdn
+    /// auth'd assets resolve the same way the page does.
+    func load(url: URL, cookieStore: WKHTTPCookieStore) {
+        loadTask?.cancel()
+        cookieSession?.invalidateAndCancel()
+        if let cached = AvatarCache.image(for: url) {
+            imageView.image = cached
+            return
+        }
+        cookieStore.getAllCookies { [weak self] cookies in
+            guard let self else { return }
+            let jar = HTTPCookieStorage()
+            for cookie in cookies {
+                jar.setCookie(cookie)
+            }
+            let config = URLSessionConfiguration.ephemeral
+            config.httpCookieStorage = jar
+            config.httpShouldSetCookies = true
+            config.httpCookieAcceptPolicy = .always
+            let session = URLSession(configuration: config)
+            self.cookieSession = session
+            let task = session.dataTask(with: url) { [weak self] data, _, _ in
+                guard let data, let image = NSImage(data: data) else { return }
+                DispatchQueue.main.async {
+                    AvatarCache.store(image, for: url)
+                    self?.imageView.image = image
+                }
+            }
+            self.loadTask = task
+            task.resume()
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        close()
+    }
+
+    @objc private func close() { onClose?() }
 }
 
 // MARK: - Controller
@@ -840,6 +1258,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private static let originKey = "plume.bubbleOrigin"
 
     private let card: BubbleCardPanel
+    private let tether = BubbleTetherPanel()
     private var bubbles: [BubblePanel] = []
     private var webView: WKWebView!
     private var isExpanded = false
@@ -848,9 +1267,21 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// Index of the bubble the card belongs to, for the fold-away animation.
     private var lastOpenedIndex = 0
     private var collapseWork: DispatchWorkItem?
+    /// True while a system file/photo picker sheet is up — resignKey must not
+    /// fold the card mid-attach.
+    private var attachmentPickerActive = false
     private let listView = ConversationListView(frame: .zero)
     /// Supplied by the owner: the main web view still holds the live list.
     var fetchConversations: ((Int, @escaping ([BubbleConversation]) -> Void) -> Void)?
+    /// Confirm with the user, then delete the whole conversation on Messenger.
+    /// Calls back with true only when it is really gone.
+    var deleteConversation: ((BubbleConversation, @escaping (Bool) -> Void) -> Void)?
+    /// How many inbox rows the picker currently asks Messenger for.
+    private var pickerLimit = 24
+    private var lastPickerCount = 0
+    private var pickerStalls = 0
+    private static let pickerPage = 24
+    private static let pickerMax = 200
     /// Uniform breathing room on all four sides of the card.
     private static let inset: CGFloat = 6
 
@@ -882,8 +1313,18 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             self, selector: #selector(unreadChanged(_:)),
             name: .plumeUnreadChanged, object: nil)
         NotificationCenter.default.addObserver(
+            self, selector: #selector(cardMediaChanged(_:)),
+            name: .plumeCardMedia, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openImageRequested(_:)),
+            name: .plumeOpenImage, object: nil)
+        NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Fullscreen Spaces can demote join-all-spaces panels on entry; re-pin.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(activeSpaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         wake()
     }
 
@@ -927,7 +1368,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         panel.setFrameOrigin(NSPoint(x: centre.x - Chain.canvas / 2,
                                      y: centre.y - Chain.canvas / 2))
-        panel.level = .floating
+        panel.level = PlumeOverlay.level
+        PlumeOverlay.apply(to: panel)
         panel.orderFrontRegardless()
     }
 
@@ -961,7 +1403,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         guard !bubbles.isEmpty else { return }
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
         if card.isVisible { keepCardOnScreen() }
+        promoteOverlayStack()
         wake()
+    }
+
+    @objc private func activeSpaceChanged() {
+        // Entering another app's fullscreen Space can leave join-all panels on
+        // the desktop Space behind it until they are ordered front again.
+        promoteOverlayStack()
     }
 
     /// Last total seen, so a rebuilt app chip does not lose its badge until
@@ -988,14 +1437,22 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     /// Which contacts are unread comes from a fresh snapshot, not from the one
     /// the bubbles were built with — that one is a photograph of the past.
+    /// Also reshuffles / refreshes the chain so newest Messenger threads sit
+    /// nearest the app chip.
     private func refreshUnreadFlags() {
         fetchConversations?(max(Preferences.bubbleLimit * 3, 12)) { [weak self] convos in
             guard let self else { return }
+            let contacts = max(0, self.bubbles.count - 1)
+            let inboxHidden = self.isExpanded && !self.showingPicker
+            guard BubbleChainSync.shouldApplySnapshot(
+                count: convos.count, contactHeads: contacts, inboxHidden: inboxHidden)
+            else { return }
             let unread = Set(convos.filter(\.unread).map(\.url))
             for panel in self.bubbles {
                 guard let chip = self.chip(panel), let convo = chip.conversation else { continue }
                 chip.setBadge(unread.contains(convo.url) ? "" : nil)
             }
+            self.syncChainToRecents(convos)
         }
     }
 
@@ -1003,18 +1460,119 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         (panel.contentView as? BubbleChipView)?.conversation
     }
 
+    /// Match the contact chain to Messenger's newest-first list. Index 0 (app
+    /// chip) never moves. Skipped mid-drag so the gesture keeps its grab.
+    private func syncChainToRecents(_ convos: [BubbleConversation]) {
+        guard !dragging, !bubbles.isEmpty else { return }
+        let contacts = max(0, bubbles.count - 1)
+        let inboxHidden = isExpanded && !showingPicker
+        guard BubbleChainSync.shouldApplySnapshot(
+            count: convos.count, contactHeads: contacts, inboxHidden: inboxHidden)
+        else { return }
+        let want = Array(convos.prefix(Preferences.bubbleLimit))
+        let wantURLs = want.map(\.url)
+
+        // Drop contact heads that fell out of the recent window.
+        for i in stride(from: bubbles.count - 1, through: 1, by: -1) {
+            guard let u = conversation(of: bubbles[i])?.url else { continue }
+            if !wantURLs.contains(u) {
+                adjustIndicesAfterRemoval(i)
+                removeBubble(at: i)
+            }
+        }
+
+        // Ensure each recent exists, then move it to its rank (1 = newest).
+        for (rank, convo) in want.enumerated() {
+            let target = rank + 1
+            if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }) {
+                if existing != target { moveBubble(from: existing, to: target) }
+            } else {
+                while bubbles.count - 1 >= Preferences.bubbleLimit, bubbles.count > 1 {
+                    let last = bubbles.count - 1
+                    adjustIndicesAfterRemoval(last)
+                    removeBubble(at: last)
+                }
+                let insertAt = min(target, bubbles.count)
+                let centre = centres.indices.contains(min(insertAt, max(0, centres.count - 1)))
+                    ? centres[min(insertAt, centres.count - 1)]
+                    : (centres.first ?? savedHeadCentre())
+                appendBubble(convo, centre: centre, at: insertAt)
+                if anchorIndex >= insertAt { anchorIndex += 1 }
+                if lastOpenedIndex >= insertAt { lastOpenedIndex += 1 }
+                if let focus = hoverFocus, focus >= insertAt { hoverFocus = focus + 1 }
+            }
+        }
+
+        // Final pass: order must match `want` exactly.
+        for (rank, convo) in want.enumerated() {
+            let target = rank + 1
+            guard let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }),
+                  existing != target else { continue }
+            moveBubble(from: existing, to: target)
+        }
+        anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
+        wake()
+    }
+
+    private func adjustIndicesAfterRemoval(_ i: Int) {
+        if lastOpenedIndex == i { lastOpenedIndex = 0 }
+        else if lastOpenedIndex > i { lastOpenedIndex -= 1 }
+        if anchorIndex == i { anchorIndex = 0 }
+        else if anchorIndex > i { anchorIndex -= 1 }
+        if let focus = hoverFocus {
+            if focus == i { hoverFocus = nil }
+            else if focus > i { hoverFocus = focus - 1 }
+        }
+    }
+
+    /// Reorder one head and every parallel array that tracks it.
+    private func moveBubble(from: Int, to: Int) {
+        guard from != to,
+              bubbles.indices.contains(from),
+              (0..<bubbles.count).contains(to) else { return }
+        func move<T>(_ a: inout [T], from: Int, to: Int) {
+            let x = a.remove(at: from)
+            a.insert(x, at: to > from ? to - 1 : to)
+        }
+        move(&bubbles, from: from, to: to)
+        move(&centres, from: from, to: to)
+        move(&velocities, from: from, to: to)
+        move(&diameters, from: from, to: to)
+        move(&hoverTargets, from: from, to: to)
+        move(&born, from: from, to: to)
+
+        func mapIndex(_ i: Int) -> Int {
+            if i == from { return to > from ? to - 1 : to }
+            if from < to {
+                if i > from && i <= to { return i - 1 }
+            } else {
+                if i >= to && i < from { return i + 1 }
+            }
+            return i
+        }
+        lastOpenedIndex = mapIndex(lastOpenedIndex)
+        anchorIndex = mapIndex(anchorIndex)
+        if let focus = hoverFocus { hoverFocus = mapIndex(focus) }
+    }
+
     /// Picking from the app chip's list earns that contact its own head, the way
     /// tapping a chat on Android spawns a bubble. The oldest contact head falls
     /// off once the chain hits the user's limit.
     private func spawnBubble(for convo: BubbleConversation) {
-        guard !bubbles.contains(where: { conversation(of: $0)?.url == convo.url }) else { return }
+        if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }) {
+            // Already open as a head — promote to newest slot.
+            if existing != 1 { moveBubble(from: existing, to: 1) }
+            return
+        }
         // index 0 is the app chip; contacts follow it.
         if bubbles.count - 1 >= Preferences.bubbleLimit, bubbles.count > 1 {
+            adjustIndicesAfterRemoval(bubbles.count - 1)
             removeBubble(at: bubbles.count - 1)
         }
         let centre = centres.first.map { NSPoint(x: $0.x, y: $0.y - Chain.step) } ?? savedHeadCentre()
         appendBubble(convo, centre: centre, at: 1)
         if anchorIndex >= 1 { anchorIndex += 1 }
+        if lastOpenedIndex >= 1 { lastOpenedIndex += 1 }
         // One more head means one more `step` of room the chain needs; without
         // this the tail is pinned at the screen edge and never reaches rest.
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
@@ -1081,8 +1639,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -m),
         ]
         if view === webView {
+            view.wantsLayer = true
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            view.layer?.transform = CATransform3DIdentity
+            CATransaction.commit()
             let lead = view.leadingAnchor.constraint(equalTo: content.leadingAnchor,
-                                                     constant: m - sidebarInset)
+                                                     constant: m)
             sidebarConstraint = lead
             rules.append(lead)
         } else {
@@ -1139,8 +1702,199 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             }
             self.lastMeasuredInset = inset
             self.sidebarInset = inset
-            self.sidebarConstraint?.constant = Self.inset - inset
+            // Layout no longer shifts the web view; chrome is CSS-hidden.
+            if !self.theaterMode { self.pushCardClip() }
         }
+    }
+
+    /// When Messenger's photo theatre opens, expand the card to nearly fill the
+    /// display and temporarily unclip the sidebar — theatre centres on the full
+    /// page, so only a wide unclipped window lays it out correctly.
+    private var theaterMode = false
+    private var preTheaterSize: NSSize?
+    /// Debounce theatre open/close so a one-frame DOM blip cannot thrash size.
+    private var theaterOpenTicks = 0
+    private var theaterCloseTicks = 0
+    /// After we expand for a tap, theatre has not mounted yet — do not restore
+    /// the small card until this deadline (or until theatre is seen, then lost).
+    private var theaterHoldUntil: CFTimeInterval = 0
+    private var photoOverlay: CardPhotoOverlay?
+    private var mediaCenterTimer: Timer?
+    private var overlayPromoteWork: [DispatchWorkItem] = []
+
+    private func pushCardClip(_ override: CGFloat? = nil) {
+        guard webView != nil else { return }
+        clearTheaterOptics()
+        let active = isExpanded && !showingPicker
+            && webView.superview === card.contentView
+        sidebarConstraint?.constant = Self.inset
+        _ = override
+        let cssJSON = Self.jsonString(InjectedScript.cardThreadCSS) ?? "\"\""
+        let js = """
+        window.__plumeCardActive=\(active ? "true" : "false");
+        window.__plumeCardClip=0;
+        window.__plumeTheaterMode=\(theaterMode ? "true" : "false");
+        try {
+          document.documentElement.classList.toggle("plume-card-thread", \(active ? "true" : "false"));
+        } catch (e) {}
+        if (\(active ? "true" : "false")) {
+          window.__plumeSetStyle && window.__plumeSetStyle("\(InjectedScript.StyleID.cardThread)", \(cssJSON));
+        } else {
+          window.__plumeRemoveStyle && window.__plumeRemoveStyle("\(InjectedScript.StyleID.cardThread)");
+        }
+        window.__plumeClearCardOverlays && window.__plumeClearCardOverlays();
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
+        if active {
+            startOverlayFitTimer()
+        } else {
+            stopOverlayFitTimer()
+            exitTheaterMode(restore: false)
+            hidePhotoOverlay()
+        }
+    }
+
+    private func clearTheaterOptics() {
+        guard webView != nil else { return }
+        webView.wantsLayer = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        webView.layer?.transform = CATransform3DIdentity
+        CATransaction.commit()
+    }
+
+    /// Poll theatre open/close; reinforce overlay-fit only while clipped.
+    private func startOverlayFitTimer() {
+        guard mediaCenterTimer == nil else { return }
+        let t = Timer(timeInterval: 0.22, repeats: true) { [weak self] _ in
+            guard let self, self.isExpanded, !self.showingPicker else { return }
+            self.pollTheaterMode()
+            if !self.theaterMode {
+                self.webView.evaluateJavaScript(
+                    "window.__plumeFitCardOverlays&&window.__plumeFitCardOverlays()",
+                    completionHandler: nil)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        mediaCenterTimer = t
+    }
+
+    private func stopOverlayFitTimer() {
+        mediaCenterTimer?.invalidate()
+        mediaCenterTimer = nil
+    }
+
+    private func startMediaCenterTimer() { startOverlayFitTimer() }
+    private func stopMediaCenterTimer() { stopOverlayFitTimer() }
+    private func reinforceMediaCenter() {
+        pollTheaterMode()
+    }
+
+    private func pollTheaterMode() {
+        webView.evaluateJavaScript(
+            "window.__plumeDetectTheater&&window.__plumeDetectTheater()"
+        ) { [weak self] result, _ in
+            guard let self, self.isExpanded, !self.showingPicker else { return }
+            let open = (result as? Bool) == true
+            if open {
+                self.theaterCloseTicks = 0
+                self.theaterHoldUntil = 0
+                self.theaterOpenTicks += 1
+                // Two ticks (~0.44s): a one-frame emoji/reaction dialog must
+                // not expand the card. Photo theatre stays open well past that.
+                if self.theaterOpenTicks >= 2 { self.enterTheaterMode() }
+            } else {
+                self.theaterOpenTicks = 0
+                if CACurrentMediaTime() < self.theaterHoldUntil { return }
+                self.theaterCloseTicks += 1
+                if self.theaterCloseTicks >= 3 { self.exitTheaterMode(restore: true) }
+            }
+        }
+    }
+
+    private func enterTheaterMode() {
+        if theaterMode {
+            theaterHoldUntil = max(theaterHoldUntil, CACurrentMediaTime() + 0.8)
+            return
+        }
+        guard isExpanded, !showingPicker else { return }
+        theaterMode = true
+        theaterOpenTicks = 2
+        theaterCloseTicks = 0
+        theaterHoldUntil = CACurrentMediaTime() + 2.0
+        preTheaterSize = card.contentRect(forFrameRect: card.frame).size
+
+        // Unclip: give Messenger the full page so theatre centres in the card.
+        sidebarConstraint?.constant = Self.inset
+        pushCardClip(0)
+
+        let visible = hostScreen.visibleFrame
+        let lane = Chain.peak + 12
+        let pad: CGFloat = 10
+        let size = NSSize(
+            width: max(card.minSize.width, visible.width - pad * 2),
+            height: max(card.minSize.height, visible.height - lane - pad))
+        card.setContentSize(size)
+        let frameSize = card.frame.size
+        let origin = NSPoint(
+            x: (visible.minX + (visible.width - frameSize.width) / 2).rounded(),
+            y: (visible.maxY - lane - frameSize.height).rounded())
+        card.setFrame(NSRect(origin: origin, size: frameSize), display: true)
+        PlumeOverlay.apply(to: card)
+        card.orderFrontRegardless()
+        promoteOverlayStack()
+        wake()
+        // Replay is optional; theatre should already open in this viewport.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.theaterMode else { return }
+            self.webView.evaluateJavaScript(
+                "window.__plumeReplayArmedImage&&window.__plumeReplayArmedImage()",
+                completionHandler: nil)
+        }
+    }
+
+    private func exitTheaterMode(restore: Bool) {
+        guard theaterMode else { return }
+        theaterMode = false
+        theaterOpenTicks = 0
+        theaterCloseTicks = 0
+        theaterHoldUntil = 0
+        if restore, let saved = preTheaterSize {
+            let visible = hostScreen.visibleFrame
+            let lane = Chain.peak + 10
+            let size = NSSize(
+                width: min(max(saved.width, card.minSize.width), visible.width - 16),
+                height: min(max(saved.height, card.minSize.height), visible.height - lane))
+            card.setContentSize(size)
+        }
+        preTheaterSize = nil
+        sidebarConstraint?.constant = Self.inset
+        pushCardClip(0)
+        if restore, isExpanded, card.isVisible {
+            positionCard()
+            promoteOverlayStack()
+            wake()
+        }
+    }
+
+    @objc private func cardMediaChanged(_ note: Notification) {
+        let open = (note.userInfo?["open"] as? Bool) ?? false
+        if open { enterTheaterMode() }
+        else { exitTheaterMode(restore: true) }
+    }
+
+    @objc private func openImageRequested(_ note: Notification) {
+        guard isExpanded, !showingPicker else { return }
+        enterTheaterMode()
+    }
+
+    private func showPhotoOverlay(url: URL) {
+        _ = url
+    }
+
+    private func hidePhotoOverlay() {
+        photoOverlay?.removeFromSuperview()
+        photoOverlay = nil
     }
 
     private func saveCardSize() {
@@ -1158,13 +1912,20 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// the conversation.
     private func showChipMenu(from view: NSView, at point: NSPoint) {
         let menu = NSMenu()
+        // Bubbles sit at `.screenSaver`; AppKit's default menu window is only
+        // `.popUpMenu` (~101) and opens *under* the chain — looks like right-
+        // click does nothing. Elevate tracking menus to our overlay tier.
+        menu.delegate = chipMenuLift
+
         let back = NSMenuItem(title: L.t("Về cửa sổ chính", "Back to the Main Window"),
                               action: #selector(exitBubbleMode), keyEquivalent: "")
         back.target = self
+        back.image = Self.menuSymbol("macwindow")
         menu.addItem(back)
         menu.addItem(.separator())
 
         let limits = NSMenu()
+        limits.delegate = chipMenuLift
         for n in [3, 5, 8, 12] {
             let item = NSMenuItem(title: "\(n)", action: #selector(pickLimit(_:)), keyEquivalent: "")
             item.target = self
@@ -1174,10 +1935,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         let limitItem = NSMenuItem(title: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
                                    action: nil, keyEquivalent: "")
+        limitItem.image = Self.menuSymbol("circle.grid.2x2")
         limitItem.submenu = limits
         menu.addItem(limitItem)
 
         let sizes = NSMenu()
+        sizes.delegate = chipMenuLift
         for (label, px) in [(L.t("Nhỏ", "Small"), 38), (L.t("Vừa", "Medium"), 46),
                             (L.t("Lớn", "Large"), 56), (L.t("Rất lớn", "Extra Large"), 66)] {
             let item = NSMenuItem(title: label, action: #selector(pickSize(_:)), keyEquivalent: "")
@@ -1188,9 +1951,114 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         let sizeItem = NSMenuItem(title: L.t("Kích thước bong bóng", "Bubble Size"),
                                   action: nil, keyEquivalent: "")
+        sizeItem.image = Self.menuSymbol("circle.fill")
         sizeItem.submenu = sizes
         menu.addItem(sizeItem)
-        menu.popUp(positioning: nil, at: point, in: view)
+
+        let display = NSMenu()
+        display.delegate = chipMenuLift
+        let follow = NSMenuItem(
+            title: L.t("Theo màn hình đang hoạt động", "Follow active display"),
+            action: #selector(pickFollowDisplay(_:)), keyEquivalent: "")
+        follow.target = self
+        follow.tag = 1
+        follow.state = Preferences.bubbleFollowActiveDisplay ? .on : .off
+        follow.image = Self.menuSymbol("arrow.triangle.2.circlepath")
+        display.addItem(follow)
+        let stay = NSMenuItem(
+            title: L.t("Giữ nguyên màn hình hiện tại", "Stay on current display"),
+            action: #selector(pickFollowDisplay(_:)), keyEquivalent: "")
+        stay.target = self
+        stay.tag = 0
+        stay.state = Preferences.bubbleFollowActiveDisplay ? .off : .on
+        stay.image = Self.menuSymbol("pin")
+        display.addItem(stay)
+        let displayItem = NSMenuItem(
+            title: L.t("Vị trí màn hình", "Display placement"),
+            action: nil, keyEquivalent: "")
+        displayItem.image = Self.menuSymbol("display")
+        displayItem.submenu = display
+        menu.addItem(displayItem)
+
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: L.t("Thoát Plume", "Quit Plume"),
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        quit.target = NSApp
+        quit.image = Self.menuSymbol("power")
+        menu.addItem(quit)
+
+        // Anchor in a tiny panel at our overlay level so the menu is parented
+        // into the same Space / tier as the bubbles (not the desktop Space).
+        let mouse = NSEvent.mouseLocation
+        let anchor = chipMenuAnchor
+        PlumeOverlay.apply(to: anchor)
+        anchor.setFrame(NSRect(x: mouse.x, y: mouse.y - 1, width: 2, height: 2),
+                        display: false)
+        anchor.orderFrontRegardless()
+        ChipMenuLift.elevateOpenMenus()
+        menu.popUp(positioning: nil, at: NSPoint(x: 1, y: 1), in: anchor.contentView)
+        anchor.orderOut(nil)
+    }
+
+    /// Retained so NSMenu.delegate stays alive for the popUp duration.
+    private let chipMenuLift = ChipMenuLift()
+    /// 1×1 host for context menus — must outlive a single popUp call.
+    private lazy var chipMenuAnchor: NSPanel = {
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 2, height: 2),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isFloatingPanel = true
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.hidesOnDeactivate = false
+        p.isReleasedWhenClosed = false
+        p.level = PlumeOverlay.level
+        PlumeOverlay.apply(to: p)
+        p.contentView = NSView(frame: p.contentRect(forFrameRect: p.frame))
+        return p
+    }()
+
+    /// Template SF Symbol sized for context menus.
+    private static func menuSymbol(_ name: String) -> NSImage? {
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            return nil
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let sized = image.withSymbolConfiguration(config) ?? image
+        sized.isTemplate = true
+        return sized
+    }
+
+    /// App-chip context menu from a screen-space click (monitor path).
+    private var chipMenuShownAt: CFTimeInterval = 0
+    private func showAppChipMenu(atScreenPoint point: NSPoint) {
+        guard let panel = bubbles.first, let chip = chip(panel) else { return }
+        // Local + global monitors both see the same click — open once.
+        let now = CACurrentMediaTime()
+        if now - chipMenuShownAt < 0.35 { return }
+        chipMenuShownAt = now
+        // Cancel any pending auto-collapse so resignKey from the menu host
+        // cannot fold the card while the user is picking.
+        collapseWork?.cancel(); collapseWork = nil
+        showChipMenu(from: chip, at: chip.convert(
+            panel.convertFromScreen(NSRect(origin: point, size: .zero)).origin,
+            from: nil))
+    }
+
+    /// True when `screenPoint` lands on the app chip's visible circle.
+    private func isAppChipHit(atScreenPoint screenPoint: NSPoint) -> Bool {
+        guard let panel = bubbles.first else { return false }
+        // Prefer the live panel frame — `centres` can lag a commit behind.
+        let c = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let live = diameters.indices.contains(0) ? diameters[0] : Chain.base
+        let r = max(live, Chain.base) / 2 + 6
+        return hypot(screenPoint.x - c.x, screenPoint.y - c.y) <= r
+    }
+
+    @objc private func pickFollowDisplay(_ sender: NSMenuItem) {
+        Preferences.bubbleFollowActiveDisplay = sender.tag == 1
+        foreignScreenTicks = 0
     }
 
     @objc private func pickSize(_ sender: NSMenuItem) {
@@ -1265,6 +2133,11 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             collapse(); return
         }
         if let convo {
+            // Promote the opened head to the newest contact slot.
+            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }), i != 1 {
+                moveBubble(from: i, to: 1)
+                lastOpenedIndex = 1
+            }
             showThread(convo.url)
             // Reading it clears it; don't make the user wait for the next snapshot.
             bubbles.first { conversation(of: $0)?.url == convo.url }
@@ -1287,6 +2160,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         PlumeTrace.log("  card SAU=\(PlumeTrace.r(card.frame)) cardScreen=\(PlumeTrace.r(card.screen?.frame ?? .zero))")
         isExpanded = true
         docked = true
+        // Open-boost layout before the first docked frame, then land on packed
+        // row slots immediately — otherwise every head piles onto rest-step X
+        // while diameters are still animating and the row looks stacked.
+        applyHoverFromFocus()
+        if centres.count == bubbles.count {
+            centres = rowSlots()
+            for i in velocities.indices { velocities[i] = .zero }
+        }
         wake()
         // A short fade, deliberately not a frame animation: growing a window
         // that holds a live WKWebView re-lays-out the page on every frame, so
@@ -1298,9 +2179,20 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // fullscreen apps on the target display. Do NOT NSApp.activate — that
         // pulls Plume's Space forward and leaves the card behind Claude/etc.
         // makeKey alone is enough for the composer thanks to nonactivatingPanel.
-        card.level = .floating
-        card.orderFrontRegardless()
+        promoteOverlayStack()
         card.makeKey()
+        // makeKey / Space transitions can demote the card for a beat — re-pin
+        // after the run loop and again once Mission Control settles.
+        overlayPromoteWork.forEach { $0.cancel() }
+        overlayPromoteWork.removeAll()
+        for delay in [0.0, 0.05, 0.2, 0.5, 1.0, 2.0] as [TimeInterval] {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.isExpanded else { return }
+                self.promoteOverlayStack()
+            }
+            overlayPromoteWork.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
         // Unfold: a small scale on the content LAYER, mirroring the fold. A
         // window-frame animation would re-lay-out the page on every frame,
         // which is what made the "nice" opening the slow one.
@@ -1321,6 +2213,29 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             ctx.duration = 0.11
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             card.animator().alphaValue = 1
+        }
+        // Newest-first order may have changed while the chain was idle.
+        refreshUnreadFlags()
+    }
+
+    /// Pin card + heads above fullscreen app content. Bubbles stay above the
+    /// card so the docked row remains clickable.
+    private func promoteOverlayStack() {
+        PlumeOverlay.apply(to: card)
+        PlumeOverlay.apply(to: tether)
+        for panel in bubbles {
+            PlumeOverlay.apply(to: panel)
+        }
+        // Card first, then tether, then bubbles — same overlay tier, stable
+        // stacking so the heads stay clickable above the chat window.
+        if card.isVisible || isExpanded {
+            card.orderFrontRegardless()
+        }
+        if tether.isVisible {
+            tether.orderFrontRegardless()
+        }
+        for panel in bubbles where panel.isVisible {
+            panel.orderFrontRegardless()
         }
     }
 
@@ -1361,6 +2276,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func hideSkipLinks() {
         webView.evaluateJavaScript("window.__plumeHideSkipLinks && window.__plumeHideSkipLinks()",
                                    completionHandler: nil)
+        pushCardClip()
     }
 
     private func showThread(_ url: URL) {
@@ -1370,29 +2286,45 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         installContent(webView)
         currentThread = url
         scheduleCardFixups()
-        for delay in [0.25, 0.7, 1.4] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.scrollToLatest()
-            }
-        }
-        // Compare against what the web view is ACTUALLY showing, not against a
-        // remembered value: navigating inside the card (Messenger's own back
-        // button, for one) leaves `currentThread` pointing at a thread the view
-        // has since left, so a remembered-value check would never reload.
-        guard ThreadURL.canonical(from: webView.url) != url else { return }
 
-        // A full load rebuilds the whole Messenger app and costs seconds. If
-        // the view already has Messenger up, click the conversation's own row
-        // instead — the same transition a user would make, and instant.
+        let alreadyOpen = ThreadURL.canonical(from: webView.url) == url
+        // Patch helpers onto the live page first — user scripts only run at
+        // document start, so an already-open Messenger session would keep the
+        // old "same URL ⇒ no-op" behaviour otherwise.
+        // Click the inbox row *before* hiding it: CSS-hiding navigation first
+        // made `__plumeOpenThread` miss the link and fall through to a full
+        // reload, which emptied the recents DOM and wiped the bubble chain.
+        webView.evaluateJavaScript(InjectedScript.threadRefreshHelpers) { [weak self] _, _ in
+            guard let self else { return }
+            self.openThreadInPage(url, force: alreadyOpen)
+            self.pushCardClip()
+        }
+    }
+
+    private func openThreadInPage(_ url: URL, force: Bool) {
         if let live = webView.url, Plume.isInternal(live),
            let hrefJSON = Self.jsonString(url.absoluteString) {
-            webView.evaluateJavaScript("window.__plumeOpenThread(\(hrefJSON))") {
-                [weak self] result, _ in
-                guard let self, (result as? Bool) != true else { return }
-                self.webView.load(URLRequest(url: url))   // row not found: fall back
+            webView.evaluateJavaScript("window.__plumeOpenThread(\(hrefJSON), \(force ? "true" : "false"))") {
+                [weak self] _, _ in
+                // Never `load()` a thread URL on top of a live Messenger
+                // session: a document reload tears down the inbox and the
+                // next recents snapshot deletes every contact bubble.
+                self?.scheduleScrollToLatest()
             }
         } else {
             webView.load(URLRequest(url: url))
+            scheduleScrollToLatest()
+        }
+    }
+
+    /// Ladder of scroll-to-end attempts: Messenger mounts virtualised rows
+    /// asynchronously after a resize / thread re-click.
+    private func scheduleScrollToLatest() {
+        for delay in [0.05, 0.2, 0.45, 0.9, 1.6, 2.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.isExpanded, !self.showingPicker else { return }
+                self.scrollToLatest()
+            }
         }
     }
 
@@ -1401,6 +2333,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func showPicker() {
         currentThread = nil
         showingPicker = true
+        pushCardClip(0)
         // Size against the chain's display — `card.screen` still names the old
         // one while the card is ordered out or mid-hop between monitors.
         let visible = hostScreen.visibleFrame
@@ -1419,10 +2352,65 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             } ?? 0
             self.showThread(convo.url)
         }
-        installContent(listView)
-        fetchConversations?(Preferences.bubbleLimit * 3) { [weak self] convos in
-            self?.listView.set(convos)
+        listView.onLoadMore = { [weak self] in self?.loadMorePicker() }
+        listView.onDelete = { [weak self] convo in
+            self?.deleteConversation?(convo) { [weak self] deleted in
+                guard let self, deleted else { return }
+                // Its head goes too; index 0 is the app chip and never does.
+                if let i = self.bubbles.firstIndex(where: {
+                    self.conversation(of: $0)?.url == convo.url
+                }), i > 0 {
+                    self.adjustIndicesAfterRemoval(i)
+                    self.removeBubble(at: i)
+                    self.wake()
+                }
+                if self.showingPicker {
+                    self.refreshPicker(preserveScroll: true, expandFirst: false)
+                }
+            }
         }
+        installContent(listView)
+        pickerLimit = max(Preferences.bubbleLimit * 3, Self.pickerPage)
+        lastPickerCount = 0
+        pickerStalls = 0
+        refreshPicker(preserveScroll: false, expandFirst: false)
+    }
+
+    /// Pull a fresh inbox snapshot into the picker. Optionally scroll Messenger's
+    /// virtualised list first so older threads exist in the DOM.
+    private func refreshPicker(preserveScroll: Bool, expandFirst: Bool) {
+        listView.setLoadMoreBusy(true)
+        let finish: (Bool) -> Void = { [weak self] scrolled in
+            guard let self else { return }
+            let want = self.pickerLimit
+            self.fetchConversations?(want) { [weak self] convos in
+                guard let self else { return }
+                let grew = convos.count > self.lastPickerCount
+                if grew { self.pickerStalls = 0 }
+                else if expandFirst { self.pickerStalls += 1 }
+                self.lastPickerCount = convos.count
+                // Always offer "load more" until two expands in a row add nothing.
+                // (DOM usually has fewer than `want` until the inbox is scrolled.)
+                let canMore = want < Self.pickerMax && self.pickerStalls < 2
+                self.listView.set(convos, canLoadMore: canMore, preserveScroll: preserveScroll)
+                self.listView.setLoadMoreBusy(false)
+            }
+        }
+        guard expandFirst else { finish(false); return }
+        webView.evaluateJavaScript("window.__plumeExpandConvList && window.__plumeExpandConvList()") { result, _ in
+            let scrolled = (result as? Bool) == true
+            // Give React a beat to mount the newly revealed rows.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { finish(scrolled) }
+        }
+    }
+
+    private func loadMorePicker() {
+        guard pickerLimit < Self.pickerMax else {
+            listView.setLoadMoreBusy(false)
+            return
+        }
+        pickerLimit = min(pickerLimit + Self.pickerPage, Self.pickerMax)
+        refreshPicker(preserveScroll: true, expandFirst: true)
     }
 
     /// Back to bubbles. Ordering the card out and detaching the web view is what
@@ -1439,14 +2427,29 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     func collapse() {
         guard isExpanded else { return }
         collapseWork?.cancel(); collapseWork = nil
+        stopMediaCenterTimer()
+        if theaterMode { exitTheaterMode(restore: true) }
         isExpanded = false
         docked = false
+        hoverFocus = nil
+        pushCardClip(0)
+        hidePhotoOverlay()
+        tether.hide()
         wake()                              // the chain flies home to its column
         bubbles.forEach { $0.orderFrontRegardless() }
         refreshUnreadFlags()
 
+        // Folding the native conversation list into the app chip leaves a
+        // translucent mini-list "ghost" on the bubble. Drop the picker before
+        // any transform and skip the content-layer fold for that path.
+        let foldingPicker = showingPicker
+        if foldingPicker {
+            listView.removeFromSuperview()
+            showingPicker = false
+        }
+
         let duration = 0.13
-        if let layer = card.contentView?.layer {
+        if !foldingPicker, let layer = card.contentView?.layer {
             layer.removeAnimation(forKey: "plume.unfold")
             let f = card.frame
             let t = shrinkTarget()
@@ -1478,6 +2481,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // view itself stays alive, so messages keep arriving and reopening
             // is instant.
             self.webView.removeFromSuperview()
+            self.listView.removeFromSuperview()
+            self.showingPicker = false
             self.card.contentView?.layer?.removeAnimation(forKey: "plume.fold")
             self.card.contentView?.layer?.transform = CATransform3DIdentity
             self.card.alphaValue = 1
@@ -1496,9 +2501,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func dismiss() {
         release()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
         unreadWork?.cancel(); unreadWork = nil
+        stopMediaCenterTimer()
+        hidePhotoOverlay()
         docked = false
+        hoverFocus = nil
+        tether.hide()
         teardownLoop()
         fixupWork.forEach { $0.cancel() }
         fixupWork.removeAll()
@@ -1533,6 +2543,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// the chain was last parked on while the bubbles appeared on another, and
     /// clicking a head seemed to do nothing at all.
     private func adoptScreenUnderCursor() {
+        guard Preferences.bubbleFollowActiveDisplay else {
+            PlumeTrace.log("  adopt: BỎ QUA (giữ màn hình hiện tại)")
+            return
+        }
         guard centres.first != nil else {
             PlumeTrace.log("  adopt: BỎ QUA (không có head)")
             return
@@ -1543,9 +2557,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         teleportChain(to: target, reason: "adopt")
     }
 
-    /// Instantly re-park the whole chain onto `target`, keeping the edge and
-    /// relative height it had on the old display. Springing across the gap
-    /// between monitors reads as a glitch, not as motion.
+    /// Instantly re-park the whole chain onto `target` on a vertical edge.
+    /// Side-by-side displays land on the shared seam; height is preserved.
+    /// Springing across the gap between monitors reads as a glitch, not motion.
     @discardableResult
     private func teleportChain(to target: NSScreen, reason: String) -> Bool {
         guard let head = centres.first else { return false }
@@ -1554,11 +2568,17 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         guard target !== current else { return false }
 
         let old = current.visibleFrame, new = target.visibleFrame
-        let fx = old.width > 0 ? (head.x - old.minX) / old.width : 0.5
+        let half = Chain.canvas / 2
+        let preferRight = DisplayHop.preferRightEdge(
+            from: current.frame, to: target.frame, headX: head.x,
+            half: half, margin: Chain.margin)
+        let edgeX = DisplayHop.edgeX(preferRight: preferRight, visible: new,
+                                     half: half, margin: Chain.margin)
         let fy = old.height > 0 ? (head.y - old.minY) / old.height : 0.5
         anchorIndex = 0
-        anchorTarget = clampedAnchor(NSPoint(x: new.minX + fx * new.width,
+        anchorTarget = clampedAnchor(NSPoint(x: edgeX,
                                              y: new.minY + fy * new.height))
+        PlumeTrace.log("  teleport edge=\(preferRight ? "right" : "left") target=\(PlumeTrace.p(anchorTarget))")
         for i in centres.indices {
             centres[i] = NSPoint(x: anchorTarget.x,
                                  y: anchorTarget.y - CGFloat(i) * Chain.step)
@@ -1569,7 +2589,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         return true
     }
 
-    private func positionCard() {
+    private func positionCard(promote: Bool = true) {
         // Tuck under the bubble that was just clicked — not always the app chip.
         let i = min(max(lastOpenedIndex, 0), max(0, centres.count - 1))
         let head = centres.indices.contains(i)
@@ -1580,7 +2600,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // The card hangs below the head, with a clear lane above it for the
         // docked row — the row is part of the window's furniture now, so the
         // card must never be pushed so high that the row leaves the screen.
-        let lane = Chain.canvas + 12
+        let lane = Chain.peak + 8          // docked row sits just above the card
         // Prefer keeping the head above the card: near the right edge align the
         // card's right side, otherwise its left. Clamping alone would shove a
         // right-edge open hundreds of points left and then yank the chain after it.
@@ -1593,6 +2613,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
         origin.y = min(max(origin.y, visible.minY + 8),
                        visible.maxY - size.height - lane)
+        // Whole points: sub-pixel setFrame while the head springs made the card
+        // (and the docked row that hangs off it) shimmer every frame.
+        origin.x = origin.x.rounded()
+        origin.y = origin.y.rounded()
         let dest = NSRect(origin: origin, size: size)
         let destScreen = screen(nearest: NSPoint(x: dest.midX, y: dest.midY))
         PlumeTrace.log("  positionCard want=\(PlumeTrace.r(dest)) visible=\(PlumeTrace.r(visible)) destScreen=\(PlumeTrace.r(destScreen.frame))")
@@ -1602,9 +2626,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         if card.screen !== destScreen, card.screen != nil {
             card.orderOut(nil)
         }
-        card.setFrame(dest, display: false)
-        card.level = .floating
-        if card.isVisible { card.orderFrontRegardless() }
+        let dx = abs(card.frame.origin.x - dest.origin.x)
+        let dy = abs(card.frame.origin.y - dest.origin.y)
+        if dx > 0.5 || dy > 0.5 || card.frame.size != dest.size {
+            card.setFrame(dest, display: false)
+        }
+        PlumeOverlay.apply(to: card)
+        if promote, card.isVisible { card.orderFrontRegardless() }
         PlumeTrace.log("  positionCard got=\(PlumeTrace.r(card.frame)) screen=\(PlumeTrace.r(card.screen?.frame ?? .zero))")
     }
 
@@ -1616,10 +2644,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         let visible = screen(nearest: NSPoint(x: card.frame.midX, y: card.frame.midY)).visibleFrame
         let size = card.frame.size
         var origin = card.frame.origin
+        let lane = Chain.peak + 8
         origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
         origin.y = min(max(origin.y, visible.minY + 8),
-                       visible.maxY - size.height - Chain.canvas - 12)
-        guard origin != card.frame.origin else { return }
+                       visible.maxY - size.height - lane)
+        origin.x = origin.x.rounded()
+        origin.y = origin.y.rounded()
+        guard abs(origin.x - card.frame.origin.x) > 0.5
+                || abs(origin.y - card.frame.origin.y) > 0.5 else { return }
         card.setFrameOrigin(origin)
     }
 
@@ -1637,10 +2669,32 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     // MARK: Auto-collapse
 
+    /// Host for system sheets (file / photo attach). Nil when the card is down.
+    var sheetHost: NSWindow? { isExpanded ? card : nil }
+
+    /// Call around `NSOpenPanel` so resignKey from the sheet does not fold the card.
+    func noteAttachmentPicker(active: Bool) {
+        attachmentPickerActive = active
+        if active {
+            collapseWork?.cancel(); collapseWork = nil
+            return
+        }
+        guard isExpanded else { return }
+        promoteOverlayStack()
+        card.makeKey()
+    }
+
     func windowDidResignKey(_ notification: Notification) {
         guard isExpanded else { return }
+        // Dragging a docked head undocks the card but keeps it visible; collapsing
+        // here would fold the chat mid-gesture while cardTravelsWithChain is set.
+        guard !dragging, !cardTravelsWithChain else { return }
+        // File/photo attach sheet steals key — do not treat that as "click away".
+        guard !attachmentPickerActive else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isExpanded, !self.card.isKeyWindow else { return }
+            guard !self.dragging, !self.cardTravelsWithChain else { return }
+            guard !self.attachmentPickerActive else { return }
             self.collapse()
         }
         collapseWork?.cancel()
@@ -1649,6 +2703,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
     func windowDidBecomeKey(_ notification: Notification) {
         collapseWork?.cancel(); collapseWork = nil
+        // Becoming key can demote a nonactivating panel relative to fullscreen
+        // peers — re-assert the same overlay stack the bubbles already keep.
+        if isExpanded { promoteOverlayStack() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         collapse()
@@ -1659,6 +2716,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// re-imposing our default on every open would be a nuisance.
     func windowDidEndLiveResize(_ notification: Notification) {
         guard !showingPicker else { return }   // the picker has a size of its own
+        guard !theaterMode else { return }     // ephemeral theatre size is not sticky
         saveCardSize()
         // A different width is a different viewport, so Messenger lays its
         // chrome column out differently — the offset that hides it has to be
@@ -1678,8 +2736,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // Size against the chain's display — `card.screen` still names the old
         // one while the card is ordered out or mid-hop between monitors.
         let visible = hostScreen.visibleFrame
-        let lane = Chain.canvas + 28          // the docked row has to fit above it
-        size.width = min(max(size.width, card.minSize.width), visible.width - 16)
+        let lane = Chain.peak + 10          // the docked row has to fit above it
+        // Messenger drops the conversation from the DOM below ~900px (Caprine
+        // #1718). The bubble card must be at least that wide so theatre/forward
+        // overlays centre on the same viewport the user sees.
+        let messengerFloor: CGFloat = 920
+        size.width = min(max(size.width, messengerFloor, card.minSize.width), visible.width - 16)
         size.height = min(max(size.height, card.minSize.height), visible.height - lane)
         if card.contentRect(forFrameRect: card.frame).size != size {
             card.setContentSize(size)
@@ -1728,6 +2790,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// started while docked — instead of orderOut'ing and leaving the chat behind.
     private var cardTravelsWithChain = false
     private var lastCardTravelScreen: NSScreen?
+    /// Sticky Dock focus — only changes on real pointer motion, with hysteresis,
+    /// so packing/spring motion of `centres` cannot flip the zoom every frame.
+    private var hoverFocus: Int?
+    private var lastHoverMouse: NSPoint?
 
     /// CADisplayLink retains its target and the run loop retains the link, so
     /// `target: self` is a permanent cycle. The proxy is the only way out.
@@ -1752,6 +2818,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// what actually lets a drag finish on the other screen.
     private var mousePoll: Timer?
     private var foreignScreenTicks = 0
+    /// While the card is open, occasionally re-assert overlay stacking — fullscreen
+    /// peers can demote the titled card without touching the borderless bubbles.
+    private var overlayKeepAliveTicks = 0
 
     private func index(of panel: BubblePanel) -> Int? {
         bubbles.firstIndex { $0 === panel }
@@ -1832,23 +2901,32 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                 endDrag(velocity: dragFlickVelocity())
             } else {
                 dragTo(p)
-                // Keep the open chat card on the same display as the avatars.
-                if cardTravelsWithChain, card.isVisible, let head = centres.first {
-                    let s = screen(nearest: head)
-                    if s !== lastCardTravelScreen {
-                        lastCardTravelScreen = s
-                        positionCard()
-                        card.orderFrontRegardless()
-                        PlumeTrace.log("  card traveled → \(PlumeTrace.r(s.frame))")
-                    }
-                }
             }
             return
         }
-        let before = hoverTargets
-        recomputeHoverTargets()
-        if before != hoverTargets { wake() }
+        // Only re-pick when the pointer actually moved. Re-sampling every poll
+        // against packing centres flipped focus under a still cursor.
+        let moved = lastHoverMouse.map {
+            hypot(p.x - $0.x, p.y - $0.y) >= 0.5
+        } ?? true
+        if moved {
+            let before = hoverTargets
+            recomputeHoverTargets()
+            syncBubbleClickThrough()
+            if before != hoverTargets { wake() }
+        } else {
+            syncBubbleClickThrough()
+        }
         followCursorScreenIfNeeded()
+        if isExpanded, card.isVisible {
+            overlayKeepAliveTicks += 1
+            if overlayKeepAliveTicks >= 90 {   // ~3s at 30 Hz
+                overlayKeepAliveTicks = 0
+                promoteOverlayStack()
+            }
+        } else {
+            overlayKeepAliveTicks = 0
+        }
     }
 
     fileprivate func tick(_ link: CADisplayLink) {
@@ -1869,6 +2947,20 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         var moving = integrate(dt: dt, now: now)
         moving = advanceMagnification(dt: dt) || moving
         commit()
+        if docked, card.isVisible { updateTether() }
+        // Card rides the chain for the whole drag. Skip orderFrontRegardless on
+        // the steady path — promoting every frame was measurable jank; only
+        // re-assert stacking when the display actually changes.
+        if cardTravelsWithChain, card.isVisible {
+            let prevScreen = lastCardTravelScreen
+            positionCard(promote: false)
+            if let head = centres.first {
+                let s = screen(nearest: head)
+                lastCardTravelScreen = s
+                if s !== prevScreen { card.orderFrontRegardless() }
+            }
+            moving = true
+        }
 
         if moving { idleFrames = 0 }
         else {
@@ -1882,30 +2974,33 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     /// Where each head sits while the card is open: a row across the top of it,
-    /// app chip first. Recomputed every frame, so the row rides the card when it
-    /// is dragged or resized.
+    /// app chip first, centered on the card. X packed by *layout* diameters
+    /// (hover targets) so zoomed heads do not sit on each other; Y rides the
+    /// Dock baseline.
     private func rowSlots() -> [NSPoint] {
         let f = card.frame
         let visible = screen(nearest: NSPoint(x: f.midX, y: f.midY)).visibleFrame
-        let half = Chain.canvas / 2
-        let y = min(f.maxY + 8 + half, visible.maxY - half - 2)
-        let minX0 = f.minX + half + 8
-        let span = CGFloat(max(0, bubbles.count - 1)) * Chain.step
-        let maxX0 = f.maxX - half - 8 - span
-        // Keep the head near where it already is so opening the card does not
-        // yank the whole chain across the display to the card's left edge.
-        let preferred = centres.first?.x ?? minX0
-        let x0 = minX0 <= maxX0
-            ? min(max(preferred, minX0), maxX0)
-            : minX0
-        return bubbles.indices.map {
-            NSPoint(x: min(x0 + CGFloat($0) * Chain.step, visible.maxX - half - 2), y: y)
+        let baseline = min(f.maxY + 2, visible.maxY - Chain.peak - 2)
+        guard !bubbles.isEmpty else { return [] }
+        let xs = rowPackedXs(cardFrame: f, visible: visible)
+        return bubbles.indices.map { i in
+            let d = diameters.indices.contains(i) ? max(diameters[i], Chain.base) : Chain.base
+            return NSPoint(x: xs[i], y: baseline + d / 2)
         }
+    }
+
+    /// Stable X centres for the docked row — uses layout diameters so packing
+    /// only changes when hover focus changes, not every magnification frame.
+    private func rowPackedXs(cardFrame f: NSRect, visible: NSRect) -> [CGFloat] {
+        Chain.dockedRowXs(
+            diameters: bubbles.indices.map { layoutDiameter($0) },
+            card: f,
+            visible: visible)
     }
 
     /// One physics step. Returns true while anything is still moving.
     private func integrate(dt: CGFloat, now: CFTimeInterval) -> Bool {
-        if docked, card.isVisible {
+        if docked {
             // Every head flies to its own slot rather than chasing the one in
             // front: a chain would arrive as a whip, and this is a toolbar.
             // The per-index τ ramp still lands them in a cascade.
@@ -1972,11 +3067,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // and kill the outward velocity so the tail stops fighting the rope.
             var dx = centres[i].x - tx, dyy = centres[i].y - ty
             let dist = (dx * dx + dyy * dyy).squareRoot()
-            if dist > Chain.maxLink, dist > 0 {
-                let s = Chain.maxLink / dist
+            let maxL = Chain.linkSpacing(layoutDiameter(i), layoutDiameter(leader)) * 1.6
+            if dist > maxL, dist > 0 {
+                let s = maxL / dist
                 dx *= s; dyy *= s
                 centres[i] = NSPoint(x: tx + dx, y: ty + dyy)
-                let nx = dx / Chain.maxLink, ny = dyy / Chain.maxLink
+                let nx = dx / maxL, ny = dyy / maxL
                 let outward = velocities[i].x * nx + velocities[i].y * ny
                 if outward > 0 {
                     velocities[i].x -= outward * nx
@@ -1997,12 +3093,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         if a > 0 {
             for i in stride(from: a - 1, through: 0, by: -1) {
-                follow(i, leader: i + 1, k: a - i, dy: Chain.step)
+                let gap = Chain.linkSpacing(layoutDiameter(i), layoutDiameter(i + 1))
+                follow(i, leader: i + 1, k: a - i, dy: gap)
             }
         }
         if a < bubbles.count - 1 {
             for i in (a + 1)..<bubbles.count {
-                follow(i, leader: i - 1, k: i - a, dy: -Chain.step)
+                let gap = Chain.linkSpacing(layoutDiameter(i), layoutDiameter(i - 1))
+                follow(i, leader: i - 1, k: i - a, dy: -gap)
             }
         }
 
@@ -2026,7 +3124,23 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         for i in bubbles.indices {
             let panel = bubbles[i]
             let scale = max(panel.backingScaleFactor, 1)
-            let o = NSPoint(x: centres[i].x - Chain.canvas / 2,
+            // Grow toward the screen interior like Dock icons off a baseline:
+            // right-edge column keeps its outer (right) rim fixed; left-edge
+            // keeps the left rim fixed.
+            let d = diameters.indices.contains(i) ? diameters[i] : Chain.base
+            // Docked row: packing already owns X and the baseline owns Y growth.
+            // Do NOT also edge-bias the panel — that slid the hit circle away from
+            // the model centre and made the app chip unreachable under zoom.
+            let visualX: CGFloat
+            if docked {
+                visualX = centres[i].x
+            } else {
+                let mid = screen(nearest: centres[i]).frame.midX
+                visualX = centres[i].x >= mid
+                    ? centres[i].x + (Chain.base - d) / 2
+                    : centres[i].x + (d - Chain.base) / 2
+            }
+            let o = NSPoint(x: visualX - Chain.canvas / 2,
                             y: centres[i].y - Chain.canvas / 2)
             // Snap to the backing grid, not to integer points — rounding to
             // points throws away half the smoothness 120Hz just bought.
@@ -2044,6 +3158,40 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             }
             (panel.contentView as? BubbleChipView)?.setDiameter(diameters[i])
         }
+        // Panels are peak-sized and overlap when step < canvas. A nil hitTest
+        // does NOT fall through to the window below — so without click-through,
+        // a neighbour's empty canvas swallows clicks meant for the app chip.
+        syncBubbleClickThrough()
+    }
+
+    /// Only the head under the cursor (or the one being dragged) accepts mouse
+    /// events; every other overlapping panel passes clicks through.
+    ///
+    /// Uses sticky `hoverFocus` — never re-hit-tests live frames here. Live
+    /// geometry moves every zoom frame and would flip ignoresMouseEvents under
+    /// a still cursor (the "can't click / jitter" bug).
+    ///
+    /// The app chip (index 0) is exempt: its context menu must stay reachable
+    /// even when sticky hover still names a neighbour.
+    private func syncBubbleClickThrough() {
+        let live: Int? = dragging ? anchorIndex : hoverFocus
+        for i in bubbles.indices {
+            var ignore = live.map { $0 != i } ?? true
+            if i == 0 { ignore = false }
+            if bubbles[i].ignoresMouseEvents != ignore {
+                bubbles[i].ignoresMouseEvents = ignore
+            }
+        }
+    }
+
+    /// Hit probes for the docked row — same X packing as `rowSlots`, Y at rest
+    /// diameter so zoom cannot feed the hit test.
+    private func rowRestSlots() -> [NSPoint] {
+        let f = card.frame
+        let visible = screen(nearest: NSPoint(x: f.midX, y: f.midY)).visibleFrame
+        let baseline = min(f.maxY + 2, visible.maxY - Chain.peak - 2)
+        let y = baseline + Chain.base / 2
+        return rowPackedXs(cardFrame: f, visible: visible).map { NSPoint(x: $0, y: y) }
     }
 
     /// Land on exact pixels so a resting chain is perfectly aligned.
@@ -2058,11 +3206,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         centres[a] = anchorTarget
         for i in velocities.indices { velocities[i] = .zero }
         for i in stride(from: a - 1, through: 0, by: -1) {
-            centres[i] = NSPoint(x: centres[i + 1].x, y: centres[i + 1].y + Chain.step)
+            let gap = Chain.linkSpacing(layoutDiameter(i), layoutDiameter(i + 1))
+            centres[i] = NSPoint(x: centres[i + 1].x, y: centres[i + 1].y + gap)
         }
         if a < bubbles.count - 1 {
             for i in (a + 1)..<bubbles.count {
-                centres[i] = NSPoint(x: centres[i - 1].x, y: centres[i - 1].y - Chain.step)
+                let gap = Chain.linkSpacing(layoutDiameter(i), layoutDiameter(i - 1))
+                centres[i] = NSPoint(x: centres[i - 1].x, y: centres[i - 1].y - gap)
             }
         }
         commit()
@@ -2081,12 +3231,30 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // once the cursor leaves the screen the mouseDown landed on, the chip
         // view stops getting mouseDragged/mouseUp, so the chain freezes at the
         // edge and never completes the hop. The monitors keep feeding the drag.
-        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseUp]
-        if let g = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] e in
+        // rightMouseDown (local): app-chip menu must work even when a neighbour
+        // panel is the sticky hover target and would otherwise swallow the event.
+        let moveDrag: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseUp]
+        let rightClick: NSEvent.EventTypeMask = [.rightMouseDown]
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: moveDrag.union(rightClick),
+                                                     handler: { [weak self] e in
+            if e.type == .rightMouseDown {
+                guard let self, self.isAppChipHit(atScreenPoint: NSEvent.mouseLocation) else { return }
+                self.showAppChipMenu(atScreenPoint: NSEvent.mouseLocation)
+                return
+            }
             self?.handleMonitor(e)
         }) { mouseMonitors.append(g) }
-        if let l = NSEvent.addLocalMonitorForEvents(matching: events, handler: { [weak self] e in
-            self?.handleMonitor(e); return e
+        if let l = NSEvent.addLocalMonitorForEvents(matching: moveDrag.union(rightClick),
+                                                    handler: { [weak self] e in
+            if e.type == .rightMouseDown {
+                guard let self, self.isAppChipHit(atScreenPoint: NSEvent.mouseLocation) else {
+                    return e
+                }
+                self.showAppChipMenu(atScreenPoint: NSEvent.mouseLocation)
+                return nil   // consume — avoid double-firing via the view
+            }
+            self?.handleMonitor(e)
+            return e
         }) { mouseMonitors.append(l) }
     }
 
@@ -2111,14 +3279,19 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func cursorMoved() {
         let before = hoverTargets
         recomputeHoverTargets()
+        syncBubbleClickThrough()
         if before != hoverTargets { wake() }
         followCursorScreenIfNeeded()
     }
 
     /// When the cursor parks on another display, bring the chain — and the
     /// floating card, when open — onto that display, matching how the avatar
-    /// bubbles already follow the active screen.
+    /// bubbles already follow the active screen. Opt-out via Preferences.
     private func followCursorScreenIfNeeded() {
+        guard Preferences.bubbleFollowActiveDisplay else {
+            foreignScreenTicks = 0
+            return
+        }
         guard !dragging, !bubbles.isEmpty, let head = centres.first else {
             foreignScreenTicks = 0
             return
@@ -2146,7 +3319,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         if teleportChain(to: target, reason: "follow-cursor") {
             if card.isVisible {
                 positionCard()
-                card.orderFrontRegardless()
+                promoteOverlayStack()
             }
             wake()
         }
@@ -2160,26 +3333,132 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         return v.contains(p)
     }
 
-    /// Recomputed inside `tick` too, because the chain can slide under a cursor
-    /// that never moves — an NSTrackingArea is only re-evaluated on pointer
-    /// motion, so it would leave a flown-in bubble unmagnified forever.
-    private func refreshHover() { recomputeHoverTargets() }
+    /// Re-apply sticky focus weights. Does NOT re-pick from geometry — that
+    /// belongs in `cursorMoved` / `pollMouse`, otherwise packing springs flip
+    /// the winner every frame and the zoom stutters.
+    private func refreshHover() { applyHoverFromFocus() }
 
-    /// Raised cosine over the live centres: bump(0)=1, bump(1)=0, zero slope at
-    /// both ends, so there is no kink at the rim. Measuring against live
-    /// positions is only safe because the canvas is fixed and `step` does not
-    /// depend on scale — magnification never moves a bubble, so there is no
-    /// scale → layout → distance → scale loop to oscillate in.
+    /// Slot-based Dock magnification. Vertical column uses Y; the docked card
+    /// row uses X. The head that owns the open card stays enlarged even when
+    /// the pointer is over a neighbour.
     private func recomputeHoverTargets() {
-        hoverTargets = Array(repeating: Chain.base, count: bubbles.count)
-        guard !dragging else { return }   // a held bubble squeezes; it does not magnify
         let p = NSEvent.mouseLocation
+        lastHoverMouse = p
+        hoverFocus = pickHoverFocus(at: p)
+        applyHoverFromFocus()
+    }
+
+    private func applyHoverFromFocus() {
+        hoverTargets = Array(repeating: Chain.base, count: bubbles.count)
+        guard !dragging, !bubbles.isEmpty else { return }
         let span = Chain.peak - Chain.base
-        for i in bubbles.indices where i < centres.count {
-            let u = hypot(centres[i].x - p.x, centres[i].y - p.y) / Chain.magRadius
-            guard u < 1 else { continue }
-            hoverTargets[i] = Chain.base + span * 0.5 * (1 + cos(.pi * u))
+        let open = min(max(lastOpenedIndex, 0), bubbles.count - 1)
+
+        if docked {
+            for i in bubbles.indices {
+                var w: CGFloat = 0
+                if let focus = hoverFocus {
+                    switch abs(i - focus) {
+                    case 0: w = 1
+                    case 1: w = Chain.magNeighbour
+                    case 2: w = Chain.magNextNeighbour
+                    default: break
+                    }
+                }
+                if i == open { w = max(w, Chain.openBoost) }
+                if w > 0 { hoverTargets[i] = Chain.base + span * w }
+            }
+            if let focus = hoverFocus, focus < hoverTargets.count {
+                hoverTargets[focus] = Chain.peak
+            }
+            return
         }
+
+        guard let focus = hoverFocus else { return }
+        for i in bubbles.indices {
+            switch abs(i - focus) {
+            case 0: hoverTargets[i] = Chain.peak
+            case 1: hoverTargets[i] = Chain.base + span * Chain.magNeighbour
+            case 2: hoverTargets[i] = Chain.base + span * Chain.magNextNeighbour
+            default: break
+            }
+        }
+    }
+
+    /// Pick the head under the pointer from stable rest probes + Euclidean
+    /// distance (with hysteresis). Never called from the display tick — packing
+    /// springs must not re-elect the winner.
+    private func pickHoverFocus(at p: NSPoint) -> Int? {
+        guard !bubbles.isEmpty, centres.count == bubbles.count else {
+            hoverFocus = nil
+            return nil
+        }
+        let horizontal = docked
+        let probes: [NSPoint] = horizontal ? rowRestSlots() : restCentresForHover()
+        guard !probes.isEmpty else { hoverFocus = nil; return nil }
+
+        // Soft field around the chain so the Dock glow engages before the tip
+        // is dead-centre on a head; hard radius still bounds false hits.
+        let fieldR = Chain.peak * 0.72
+        var dist = Array(repeating: CGFloat.greatestFiniteMagnitude, count: probes.count)
+        for i in probes.indices {
+            dist[i] = hypot(p.x - probes[i].x, p.y - probes[i].y)
+        }
+        guard let nearest = dist.enumerated().min(by: { $0.element < $1.element }),
+              nearest.element <= fieldR else {
+            hoverFocus = nil
+            return nil
+        }
+
+        // Hysteresis: keep focus until another probe is clearly closer.
+        if let focus = hoverFocus, focus < dist.count, dist[focus] <= fieldR + Chain.step * 0.25 {
+            let margin = Chain.step * 0.28
+            if nearest.offset != focus, nearest.element < dist[focus] - margin {
+                hoverFocus = nearest.offset
+            }
+            return hoverFocus
+        }
+        hoverFocus = nearest.offset
+        return hoverFocus
+    }
+
+    /// Diameter used for chain *spacing* — hover targets, not the animating
+    /// visual diameter. Spacing from live `diameters` made the column breathe
+    /// under a still cursor and flipped hit tests every frame.
+    private func layoutDiameter(_ i: Int) -> CGFloat {
+        if hoverTargets.indices.contains(i) { return max(hoverTargets[i], Chain.base) }
+        return Chain.base
+    }
+
+    /// Unmagnified column through the live anchor — Dock slot positions.
+    private func restCentresForHover() -> [NSPoint] {
+        let a = min(anchorIndex, max(0, bubbles.count - 1))
+        guard centres.indices.contains(a) else { return centres }
+        var pts = Array(repeating: NSPoint.zero, count: bubbles.count)
+        let x = centres[a].x
+        pts[a] = centres[a]
+        for i in stride(from: a - 1, through: 0, by: -1) {
+            pts[i] = NSPoint(x: x, y: pts[i + 1].y + Chain.step)
+        }
+        for i in (a + 1)..<bubbles.count {
+            pts[i] = NSPoint(x: x, y: pts[i - 1].y - Chain.step)
+        }
+        return pts
+    }
+
+    private func updateTether() {
+        guard isExpanded, card.isVisible, !bubbles.isEmpty else {
+            tether.hide(); return
+        }
+        let i = min(max(lastOpenedIndex, 0), bubbles.count - 1)
+        guard centres.indices.contains(i) else { tether.hide(); return }
+        let d = diameters.indices.contains(i) ? max(diameters[i], Chain.base) : Chain.base
+        let from = NSPoint(x: centres[i].x, y: centres[i].y - d / 2)
+        let to = NSPoint(x: centres[i].x,
+                         y: min(card.frame.maxY - 2, from.y - 4))
+        // Cord only when there is a visible gap between head and card.
+        guard from.y > to.y + 2 else { tether.hide(); return }
+        tether.update(from: from, to: to)
     }
 
     private func advanceMagnification(dt: CGFloat) -> Bool {
@@ -2288,15 +3567,19 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         // Hop onto the landing display before choosing the edge, so the spring
         // target is reachable and commit() reassigns each panel's screen.
+        // After a hop, lock X to that seam edge — a midX re-pick below used to
+        // flip the chain to the opposite side when the flick projected past centre.
+        var lockedRight: Bool?
         if land !== headScreen {
             let old = headScreen.visibleFrame, neu = land.visibleFrame
             let fy = old.height > 0 ? (centres[a].y - old.minY) / old.height : 0.5
             let half = Chain.canvas / 2
-            // Enter from the side we came from — park on that edge of `land`.
-            let fromRight = headScreen.frame.midX > land.frame.midX
-            let edgeX = fromRight
-                ? neu.maxX - half - Chain.margin
-                : neu.minX + half + Chain.margin
+            let preferRight = DisplayHop.preferRightEdge(
+                from: headScreen.frame, to: land.frame, headX: centres[a].x,
+                half: half, margin: Chain.margin)
+            lockedRight = preferRight
+            let edgeX = DisplayHop.edgeX(preferRight: preferRight, visible: neu,
+                                         half: half, margin: Chain.margin)
             let edgeY = neu.minY + fy * neu.height
             centres[a] = NSPoint(x: edgeX, y: edgeY)
             for i in centres.indices where i != a {
@@ -2318,8 +3601,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         let hiY = visible.maxY - half - Chain.margin - above
         let px = centres[a].x + (fast ? v.x * Chain.projectTauX : 0)
         let py = centres[a].y + (fast ? v.y * Chain.projectTauY : 0)
+        let preferRight = lockedRight ?? (px >= visible.midX)
         anchorTarget = NSPoint(
-            x: px < visible.midX ? left : right,
+            x: preferRight ? right : left,
             y: loY <= hiY ? min(max(py, loY), hiY) : hiY)
         PlumeTrace.log("  dragEnded mouse=\(PlumeTrace.p(mouse)) head=\(PlumeTrace.p(centres[a])) target=\(PlumeTrace.p(anchorTarget)) land=\(PlumeTrace.r(visible))")
         dragSamples.removeAll()

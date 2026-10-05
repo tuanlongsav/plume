@@ -120,6 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Preferences.bubbleLimit = sender.tag
     }
 
+    @objc private func setBubbleFollowDisplay(_ sender: NSMenuItem) {
+        Preferences.bubbleFollowActiveDisplay = sender.tag == 1
+    }
+
     /// Bubble mode replaces the main window rather than sitting alongside it:
     /// the whole point is a compact, private surface, so leaving the full
     /// window on screen would defeat it.
@@ -183,6 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             bubbles.fetchConversations = { [weak self] limit, done in
                 self?.controller.fetchConversations(limit: limit, completion: done)
             }
+            bubbles.deleteConversation = { [weak self] convo, done in
+                self?.controller.confirmAndDeleteConversation(
+                    url: convo.url, name: convo.name, completion: done)
+            }
             self.window.orderOut(nil)
             Preferences.bubbleMode = true
         }
@@ -219,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func nextUnread()       { controller.nextUnreadConversation() }
     @objc private func findConversation() { controller.findConversation() }
     @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
+    @objc private func deleteConversation() { controller.deleteCurrentConversation() }
     @objc private func toggleShortcuts()  { Preferences.shortcuts.toggle() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -234,6 +243,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
         case #selector(setBubbleLimit(_:)):
             item.state = Preferences.bubbleLimit == item.tag ? .on : .off
+        case #selector(setBubbleFollowDisplay(_:)):
+            let follow = Preferences.bubbleFollowActiveDisplay
+            item.state = (item.tag == 1) == follow ? .on : .off
         case #selector(toggleChatBubble):
             item.title = ChatBubbleController.isOpen
                 ? L.t("Về cửa sổ chính", "Back to Main Window")
@@ -243,6 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
              #selector(prevConversation), #selector(nextUnread),
              #selector(findConversation):
             return Preferences.shortcuts
+        // The bubble card has its own delete, on the picker's rows.
+        case #selector(deleteConversation):
+            return controller.canDeleteCurrentConversation && !ChatBubbleController.isOpen
         case #selector(toggleChrome):
             item.title = (window.toolbar?.isVisible ?? true) ? "Hide Toolbar" : "Show Toolbar"
         default: break
@@ -337,6 +352,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         convMenu.addItem(withTitle: "Find Conversation…",
             action: #selector(findConversation), keyEquivalent: "k").target = self
         convMenu.addItem(.separator())
+        // ⇧⌘⌫, not ⌘⌫: a menu shortcut wins over the composer, where ⌘⌫ is
+        // "delete to start of line".
+        let deleteConv = convMenu.addItem(withTitle: "Delete Conversation…",
+            action: #selector(deleteConversation), keyEquivalent: "\u{8}")
+        deleteConv.keyEquivalentModifierMask = [.command, .shift]
+        deleteConv.target = self
+        convMenu.addItem(.separator())
         convMenu.addItem(withTitle: "Enable Conversation Shortcuts",
             action: #selector(toggleShortcuts), keyEquivalent: "").target = self
 
@@ -363,6 +385,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.target = self
         }
         limitItem.submenu = limitMenu
+        let displayItem = windowMenu.addItem(
+            withTitle: L.t("Vị trí màn hình bong bóng", "Bubble Display Placement"),
+            action: nil, keyEquivalent: "")
+        let displayMenu = NSMenu()
+        let followIt = displayMenu.addItem(
+            withTitle: L.t("Theo màn hình đang hoạt động", "Follow active display"),
+            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
+        followIt.tag = 1
+        followIt.target = self
+        let stayIt = displayMenu.addItem(
+            withTitle: L.t("Giữ nguyên màn hình hiện tại", "Stay on current display"),
+            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
+        stayIt.tag = 0
+        stayIt.target = self
+        displayItem.submenu = displayMenu
         windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 

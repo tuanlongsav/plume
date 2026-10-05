@@ -36,6 +36,8 @@ final class WebViewController: NSViewController {
     /// turn into a download — so `didStartProvisionalNavigation` doesn't flash
     /// the "loading" pill for it. Consumed once, when that navigation starts.
     private var expectingAttachmentNav = false
+    /// The sidebar row a native right-click menu is currently open for.
+    private var pendingRowDelete: (url: URL, name: String)?
 
     /// Toolbar refreshes its button states through this after any nav change.
     var onChromeUpdate: (() -> Void)?
@@ -60,6 +62,9 @@ final class WebViewController: NSViewController {
         let bridge = ScriptBridge(self)
         controller.add(bridge, name: "notify")
         controller.add(bridge, name: "notifyClose")
+        controller.add(bridge, name: "cardMedia")
+        controller.add(bridge, name: "openImage")
+        controller.add(bridge, name: "rowMenu")
         config.userContentController = controller
 
         // Let HTML5 audio/video (call ringtones, voice clips) autoplay.
@@ -262,6 +267,100 @@ final class WebViewController: NSViewController {
         }
     }
 
+    // MARK: Deleting a whole conversation
+
+    var canDeleteCurrentConversation: Bool { ThreadURL.isThread(webView?.url) }
+
+    /// Menu path: delete the conversation that is open right now.
+    func deleteCurrentConversation() {
+        guard let url = ThreadURL.canonical(from: webView.url) else { return }
+        // The alert should name who is about to be deleted; the list knows.
+        fetchConversations(limit: 80) { [weak self] convos in
+            let id = ThreadURL.id(from: url)
+            let name = convos.first { ThreadURL.id(from: $0.url) == id }?.name ?? ""
+            self?.confirmAndDeleteConversation(url: url, name: name)
+        }
+    }
+
+    /// Right-click on a row of Messenger's own sidebar (posted by the page).
+    func handleRowMenu(_ body: [String: Any]) {
+        guard let href = body["href"] as? String,
+              let url = ThreadURL.canonical(from: URL(string: href)),
+              let window = webView.window
+        else { return }
+        pendingRowDelete = (url, body["name"] as? String ?? "")
+        let menu = NSMenu()
+        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
+                              action: #selector(deleteFromRowMenu), keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        menu.addItem(item)
+        menu.popUp(positioning: nil,
+                   at: webView.convert(window.mouseLocationOutsideOfEventStream, from: nil),
+                   in: webView)
+    }
+
+    @objc private func deleteFromRowMenu() {
+        guard let (url, name) = pendingRowDelete else { return }
+        pendingRowDelete = nil
+        confirmAndDeleteConversation(url: url, name: name)
+    }
+
+    /// Ask first — Messenger cannot restore a deleted chat — then run
+    /// Messenger's own delete flow. `completion` gets true only when the
+    /// conversation is really gone.
+    func confirmAndDeleteConversation(url: URL, name: String,
+                                      completion: ((Bool) -> Void)? = nil) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = name.isEmpty
+            ? L.t("Xoá đoạn chat này?", "Delete this chat?")
+            : L.t("Xoá đoạn chat với “\(name)”?", "Delete the chat with “\(name)”?")
+        alert.informativeText = L.t(
+            "Toàn bộ tin nhắn trong đoạn chat sẽ bị xoá vĩnh viễn khỏi tài khoản của bạn. Không thể hoàn tác.",
+            "Every message in this chat will be permanently deleted from your account. This can't be undone.")
+        // Cancel first, so Return never deletes.
+        alert.addButton(withTitle: L.t("Huỷ", "Cancel"))
+        alert.addButton(withTitle: L.t("Xoá", "Delete")).hasDestructiveAction = true
+
+        let bubbles = ChatBubbleController.shared
+        bubbles?.noteAttachmentPicker(active: true)   // a sheet must not fold the card
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            bubbles?.noteAttachmentPicker(active: false)
+            guard response == .alertSecondButtonReturn, let self else { completion?(false); return }
+            self.runDelete(url: url, completion: completion)
+        }
+        if let host = bubbles?.sheetHost ?? webView.window, host.isVisible {
+            alert.beginSheetModal(for: host, completionHandler: finish)
+        } else {
+            alert.window.level = .screenSaver
+            finish(alert.runModal())
+        }
+    }
+
+    private func runDelete(url: URL, completion: ((Bool) -> Void)?) {
+        webView.callAsyncJavaScript(InjectedScript.deleteThreadJS,
+                                    arguments: ["href": url.absoluteString],
+                                    in: nil, in: .page) { [weak self] result in
+            let outcome = ThreadDeleteOutcome(result: try? result.get())
+            if let message = outcome.failureMessage { self?.showDeleteFailure(message) }
+            completion?(outcome == .ok)
+        }
+    }
+
+    private func showDeleteFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L.t("Chưa xoá được đoạn chat", "Couldn't delete the chat")
+        alert.informativeText = message
+        if let host = ChatBubbleController.shared?.sheetHost ?? webView.window, host.isVisible {
+            alert.beginSheetModal(for: host, completionHandler: nil)
+        } else {
+            alert.window.level = .screenSaver
+            alert.runModal()
+        }
+    }
+
     // MARK: Conversation navigation (Caprine port)
 
     private func runConvJS(_ call: String) {
@@ -347,6 +446,21 @@ extension WebViewController {
         guard let id = body["id"] as? Int else { return }
         UNUserNotificationCenter.current()
             .removeDeliveredNotifications(withIdentifiers: ["plume-\(id)"])
+    }
+
+    func handleCardMedia(_ body: [String: Any]) {
+        let open = body["open"] as? Bool ?? false
+        NotificationCenter.default.post(
+            name: .plumeCardMedia, object: nil,
+            userInfo: ["open": open])
+    }
+
+    func handleOpenImage(_ body: [String: Any]) {
+        let url = (body["url"] as? String).flatMap(URL.init(string:))
+        var info: [String: Any] = [:]
+        if let url { info["url"] = url }
+        NotificationCenter.default.post(
+            name: .plumeOpenImage, object: nil, userInfo: info)
     }
 }
 
@@ -530,8 +644,27 @@ extension WebViewController: WKUIDelegate {
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories
         panel.canChooseFiles = true
-        panel.begin { response in
+
+        // Prefer a sheet on the bubble card (or the main window) so the picker
+        // shares that window's Space / screen and stays above fullscreen apps.
+        let host = ChatBubbleController.shared?.sheetHost ?? webView.window
+        let bubbles = ChatBubbleController.shared
+        bubbles?.noteAttachmentPicker(active: true)
+
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            bubbles?.noteAttachmentPicker(active: false)
             completionHandler(response == .OK ? panel.urls : nil)
+        }
+
+        if let host {
+            // Inherit the card's overlay level so the sheet is not buried under
+            // another app's fullscreen content on the same display.
+            panel.level = host.level
+            panel.beginSheetModal(for: host, completionHandler: finish)
+        } else {
+            panel.level = .screenSaver
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.begin(completionHandler: finish)
         }
     }
 
@@ -657,6 +790,9 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         switch message.name {
         case "notify":      controller?.handleNotify(body)
         case "notifyClose": controller?.handleNotifyClose(body)
+        case "cardMedia":   controller?.handleCardMedia(body)
+        case "openImage":   controller?.handleOpenImage(body)
+        case "rowMenu":     controller?.handleRowMenu(body)
         default: break
         }
     }

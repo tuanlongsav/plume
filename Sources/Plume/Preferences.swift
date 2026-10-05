@@ -54,6 +54,14 @@ enum Preferences {
         set { defaults.set(Double(max(32, min(newValue, 80))), forKey: "plume.bubbleSize") }
     }
 
+    /// When true, the bubble chain teleports onto the display under the cursor.
+    /// When false, heads stay where the user parked them (drag to move displays).
+    /// Defaults to on — the previous always-follow behaviour.
+    static var bubbleFollowActiveDisplay: Bool {
+        get { defaults.object(forKey: "plume.bubbleFollowDisplay") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "plume.bubbleFollowDisplay") }
+    }
+
     /// Was the app in bubble mode when it was last used? Restored on launch.
     static var bubbleMode: Bool {
         get { defaults.bool(forKey: "plume.bubbleMode") }

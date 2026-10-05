@@ -6,6 +6,269 @@ import Foundation
 /// (so they look and behave like a real app, and survive the page being
 /// in the background), and lets a native click reopen the right thread.
 enum InjectedScript {
+    /// Shared theatre detector. Photo/video lightbox only — not emoji,
+    /// sticker, GIF or reaction pickers. Those are also `role="dialog"` and
+    /// used to trip the greedy size check, which expanded the card to fill
+    /// the display then restored it 0.2s later in a loop.
+    static let theaterDetectJS = #"""
+    (function (g) {
+    g.__plumeIsPhotoTheater = function (info) {
+        try {
+        var W = Number(info.vw) || 0, H = Number(info.vh) || 0;
+        var dw = Number(info.dw) || 0, dh = Number(info.dh) || 0;
+        var largeMedia = Number(info.largeMedia) || 0;
+        var smallImgs = Number(info.smallImgs) || 0;
+        if (W < 200 || H < 200) return false;
+
+        function norm(s) {
+            s = String(s || "");
+            try {
+                s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            } catch (e) {}
+            return s.replace(/[\u0111\u0110]/g, "d")
+                .replace(/\s+/g, " ").trim().toLowerCase();
+        }
+        function hasPhrase(n, phrase) {
+            var p = n.indexOf(phrase);
+            if (p < 0) return false;
+            var before = p === 0 || n.charAt(p - 1) === " ";
+            var after = p + phrase.length === n.length || n.charAt(p + phrase.length) === " ";
+            return before && after;
+        }
+        var n = norm(info.label);
+        var picker = [
+            "emoji", "emojis", "sticker", "stickers", "gif", "gifs",
+            "bieu tuong", "cam xuc", "nhan dan", "reaction", "reactions",
+            "bay to cam xuc", "choose an emoji", "choose a sticker"
+        ];
+        for (var i = 0; i < picker.length; i++) {
+            if (hasPhrase(n, picker[i])) return false;
+        }
+        // Emoji/sticker grid: lots of tiles, no photograph.
+        if (smallImgs >= 8 && largeMedia < 1) return false;
+
+        var covers = dw >= W * 0.62 && dh >= H * 0.48;
+        if (covers && largeMedia > 0) return true;
+        if (largeMedia > 0 && dw >= W * 0.45 && dh >= H * 0.40) return true;
+        return false;
+        } catch (e) { return false; }
+    };
+
+    g.__plumeDetectTheater = function () {
+        try {
+            var W = window.innerWidth || 0, H = window.innerHeight || 0;
+            if (W < 200 || H < 200) return false;
+
+            function labelOf(el) {
+                var s = "";
+                try { s += " " + (el.getAttribute("aria-label") || ""); } catch (e) {}
+                try {
+                    var id = el.getAttribute("aria-labelledby");
+                    if (id) {
+                        var ids = String(id).split(/\s+/);
+                        for (var i = 0; i < ids.length; i++) {
+                            var node = document.getElementById(ids[i]);
+                            if (node) s += " " + (node.innerText || node.textContent || "");
+                        }
+                    }
+                } catch (e) {}
+                try {
+                    var h = el.querySelector("h1, h2, [role='heading']");
+                    if (h) s += " " + (h.innerText || h.textContent || "");
+                } catch (e) {}
+                return s;
+            }
+            function metrics(el) {
+                var r = el.getBoundingClientRect();
+                var large = 0, small = 0;
+                try {
+                    var media = el.querySelectorAll("img, video");
+                    var cap = Math.min(media.length, 60);
+                    for (var i = 0; i < cap; i++) {
+                        var mr = media[i].getBoundingClientRect();
+                        if (mr.width < 8 || mr.height < 8) continue;
+                        if (mr.width >= 220 && mr.height >= 180) large++;
+                        else if (mr.width <= 96 && mr.height <= 96) small++;
+                    }
+                } catch (e) {}
+                return {
+                    vw: W, vh: H, dw: r.width, dh: r.height,
+                    label: labelOf(el), largeMedia: large, smallImgs: small
+                };
+            }
+            var nodes = document.querySelectorAll(
+                '[role="dialog"], [role="alertdialog"], [aria-modal="true"]');
+            for (var i = 0; i < nodes.length; i++) {
+                if (g.__plumeIsPhotoTheater(metrics(nodes[i]))) return true;
+            }
+            var media = document.querySelectorAll("img, video");
+            for (var m = 0; m < media.length; m++) {
+                var el = media[m];
+                var r = el.getBoundingClientRect();
+                if (r.width < 220 || r.height < 180) continue;
+                var n = el;
+                for (var d = 0; d < 12 && n; d++) {
+                    var cs;
+                    try { cs = window.getComputedStyle(n); } catch (e) { break; }
+                    if (cs.visibility === "hidden" || cs.display === "none") break;
+                    var role = "";
+                    try { role = n.getAttribute("role") || ""; } catch (e) {}
+                    var modal = false;
+                    try { modal = n.getAttribute("aria-modal") === "true"; } catch (e) {}
+                    if (cs.position === "fixed" || cs.position === "sticky"
+                            || role === "dialog" || role === "alertdialog" || modal) {
+                        if (g.__plumeIsPhotoTheater(metrics(n))) return true;
+                        break;
+                    }
+                    n = n.parentElement;
+                }
+            }
+            return false;
+        } catch (e) { return false; }
+    };
+    })(typeof window !== "undefined" ? window : globalThis);
+    """#
+
+    /// Label matching for the delete-chat flow. No DOM in here, so the tests
+    /// can run it in a bare JSContext. Exact (accent-folded) labels only: a
+    /// destructive flow must never click something that merely looks close.
+    static let deleteMatchJS = #"""
+    (function (g) {
+        function norm(s) {
+            s = String(s || "");
+            try { s = s.normalize("NFD").replace(/[̀-ͯ]/g, ""); } catch (e) {}
+            return s.replace(/[đĐ]/g, "d")
+                .replace(/\s+/g, " ").trim().toLowerCase();
+        }
+        var DELETE = ["delete chat", "xoa doan chat",
+                      "delete conversation", "xoa cuoc tro chuyen"];
+        g.__plumeDeleteMatch = {
+            threadId: function (href) {
+                var m = /\/t\/([^\/?#]+)/.exec(String(href || ""));
+                return m ? m[1] : "";
+            },
+            // The row's "⋯" button: "Menu", "More options for An",
+            // "Tùy chọn khác cho An".
+            isMenuButton: function (label) {
+                var n = norm(label);
+                return n === "menu" || n.indexOf("more options") === 0
+                    || n.indexOf("tuy chon khac") === 0;
+            },
+            isDeleteItem: function (label) { return DELETE.indexOf(norm(label)) !== -1; },
+            // The dialog's button repeats the item, or is a bare "Delete".
+            isConfirm: function (label) {
+                var n = norm(label);
+                return n === "delete" || n === "xoa" || DELETE.indexOf(n) !== -1;
+            }
+        };
+    })(typeof window !== "undefined" ? window : this);
+    """#
+
+    /// Body for `callAsyncJavaScript` (argument: `href`). Drives Messenger's
+    /// own flow — row "⋯" → "Delete chat" → confirm — and resolves to a
+    /// `ThreadDeleteOutcome` raw value. Role/label hooks only. A step that
+    /// doesn't find its exact control backs out with Escape and clicks nothing
+    /// else.
+    static let deleteThreadJS = deleteMatchJS + #"""
+    var M = window.__plumeDeleteMatch;
+    var id = M.threadId(href);
+    if (!id) return "no-row";
+
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    async function until(fn, ms) {
+        var end = Date.now() + ms;
+        for (;;) {
+            var v = fn();
+            if (v) return v;
+            if (Date.now() >= end) return null;
+            await sleep(60);
+        }
+    }
+    function label(el) {
+        var lines = (el.innerText || el.textContent || "").split("\n")
+            .map(function (x) { return x.trim(); }).filter(Boolean);
+        return lines[0] || el.getAttribute("aria-label") || "";
+    }
+    function fresh(selector, before) {
+        return Array.prototype.filter.call(document.querySelectorAll(selector),
+            function (el) { return before.indexOf(el) === -1; });
+    }
+    function snapshot(selector) {
+        return Array.prototype.slice.call(document.querySelectorAll(selector));
+    }
+    function backOut() {
+        try {
+            (document.activeElement || document.body).dispatchEvent(new KeyboardEvent(
+                "keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27,
+                             bubbles: true, cancelable: true }));
+        } catch (e) {}
+    }
+    function findRow() {
+        var rows = document.querySelectorAll('[role="row"]');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].closest('[role="main"]')) continue;   // skip the open thread
+            var link = rows[i].querySelector('a[role="link"][href]');
+            if (link && M.threadId(link.href) === id) return rows[i];
+        }
+        return null;
+    }
+
+    var row = findRow();
+    if (!row) return "no-row";
+    try { row.scrollIntoView({ block: "nearest" }); } catch (e) {}
+
+    // The "⋯" button is only mounted while the row is hovered.
+    var hoverTarget = row.querySelector('a[role="link"]') || row;
+    ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"].forEach(function (t) {
+        try {
+            hoverTarget.dispatchEvent(new MouseEvent(t,
+                { bubbles: true, cancelable: true, view: window }));
+        } catch (e) {}
+    });
+    var button = await until(function () {
+        var c = row.querySelectorAll('[role="button"][aria-label], [aria-haspopup="menu"]');
+        for (var i = 0; i < c.length; i++) {
+            if (M.isMenuButton(c[i].getAttribute("aria-label"))) return c[i];
+        }
+        var pop = row.querySelectorAll('[aria-haspopup="menu"]');
+        return pop.length === 1 ? pop[0] : null;
+    }, 2000);
+    if (!button) return "no-menu";
+
+    var menusBefore = snapshot('[role="menu"]');
+    button.click();
+    var item = await until(function () {
+        var menus = fresh('[role="menu"]', menusBefore);
+        for (var m = 0; m < menus.length; m++) {
+            var items = menus[m].querySelectorAll('[role="menuitem"]');
+            for (var i = 0; i < items.length; i++) {
+                if (M.isDeleteItem(label(items[i]))) return items[i];
+            }
+        }
+        return null;
+    }, 2500);
+    if (!item) { backOut(); return "no-item"; }
+
+    var dialogsBefore = snapshot('[role="dialog"], [role="alertdialog"]');
+    item.click();
+    var confirm = await until(function () {
+        var dialogs = fresh('[role="dialog"], [role="alertdialog"]', dialogsBefore);
+        for (var d = 0; d < dialogs.length; d++) {
+            var buttons = dialogs[d].querySelectorAll('[role="button"], button');
+            for (var i = 0; i < buttons.length; i++) {
+                if (buttons[i].getAttribute("aria-disabled") === "true") continue;
+                if (M.isConfirm(label(buttons[i]))) return buttons[i];
+            }
+        }
+        return null;
+    }, 3000);
+    if (!confirm) { backOut(); return "no-confirm"; }
+
+    confirm.click();
+    var gone = await until(function () { return !findRow(); }, 6000);
+    return gone ? "ok" : "timeout";
+    """#
+
     static let source = #"""
     (function () {
         "use strict";
@@ -177,11 +440,11 @@ enum InjectedScript {
 
         // --- Open a thread without reloading (chat bubble card) --------
         // The card keeps one long-lived web view, so switching bubbles must not
-        // reload messenger.com — that rebuilds the entire SPA and takes
-        // seconds. Clicking the conversation's own row is the same transition
-        // the user would make by hand, and it is instant. The row is in the DOM
-        // even though the card clips the list out of sight.
-        window.__plumeOpenThread = function (href) {
+        // reload messenger.com — that rebuilds the entire SPA, and the empty
+        // inbox snapshot that follows deletes every contact bubble. Click the
+        // conversation row (still in the DOM until we hide chrome). If the row
+        // is gone, return false: native code must NOT fall back to load().
+        window.__plumeOpenThread = function (href, force) {
             try {
                 function id(u) {
                     var p = String(u || "").split("?")[0].replace(/\/+$/, "").split("/");
@@ -189,8 +452,11 @@ enum InjectedScript {
                 }
                 var want = id(href);
                 if (!want) return false;
-                if (id(location.href) === want) return true;      // already there
-                var links = document.querySelectorAll('a[role="link"][href*="/t/"]');
+                // Already on this thread: a plain no-op leaves a detached/resized
+                // card stuck on old virtualised history. `force` re-clicks the
+                // row so Messenger remounts the latest messages.
+                if (id(location.href) === want && !force) return true;
+                var links = document.querySelectorAll('a[href*="/t/"]');
                 for (var i = 0; i < links.length; i++) {
                     if (id(links[i].href) !== want) continue;
                     var hit = links[i].querySelector('[role="gridcell"]') || links[i];
@@ -202,26 +468,47 @@ enum InjectedScript {
         };
 
         // --- Jump to the newest message (chat bubble card) -------------
-        // The shared web view is resized when it moves into the card, and a
-        // virtualised message list keeps its scroll offset across that — which
-        // lands the reader in old history instead of at the latest message.
-        // Called only just after a thread switch, never while reading, so it
-        // cannot fight someone scrolling back through the conversation.
         window.__plumeScrollToLatest = function () {
             try {
                 var main = document.querySelector('[role="main"]');
                 if (!main) return false;
-                var best = null, bestOver = 120;
-                var all = main.querySelectorAll('div');
+                var phrases = [
+                    "jump to present", "tin nhan moi", "tin nhắn mới",
+                    "new message", "new messages", "xem tin nhan moi",
+                    "xem tin nhắn mới", "nhay den hien tai", "nhảy đến hiện tại"
+                ];
+                function norm(s) {
+                    return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                        .replace(/[\u0111\u0110]/g, "d")
+                        .replace(/\s+/g, " ").trim().toLowerCase();
+                }
+                var controls = main.querySelectorAll('[role="button"], button, a[role="link"]');
+                for (var c = 0; c < controls.length; c++) {
+                    var label = norm(controls[c].innerText || controls[c].getAttribute("aria-label"));
+                    if (!label || label.length > 48) continue;
+                    for (var p = 0; p < phrases.length; p++) {
+                        if (label.indexOf(phrases[p]) >= 0) {
+                            controls[c].click();
+                            break;
+                        }
+                    }
+                }
+                var best = null, bestOver = 80;
+                var all = main.querySelectorAll("div");
                 for (var i = 0; i < all.length; i++) {
                     var e = all[i];
                     var over = e.scrollHeight - e.clientHeight;
                     if (over <= bestOver) continue;
                     var oy = window.getComputedStyle(e).overflowY;
-                    if (oy !== 'auto' && oy !== 'scroll') continue;
+                    if (oy !== "auto" && oy !== "scroll" && oy !== "overlay") continue;
                     best = e; bestOver = over;
                 }
                 if (!best) return false;
+                for (var n = 0; n < 5; n++) best.scrollTop = best.scrollHeight;
+                var rows = main.querySelectorAll('[role="row"], [role="gridcell"]');
+                if (rows.length) {
+                    rows[rows.length - 1].scrollIntoView({ block: "end", inline: "nearest" });
+                }
                 best.scrollTop = best.scrollHeight;
                 return true;
             } catch (e) { return false; }
@@ -257,6 +544,224 @@ enum InjectedScript {
             return n;
         };
 
+        // --- Card chrome-clip: fit Messenger overlays to the visible strip ----
+        //
+        // ROOT CAUSE: the bubble card gives Messenger a WIDE viewport and shifts
+        // the WKWebView left by `clip` so the sidebar/list fall outside the card.
+        // Conversation chrome looks correct, but every position:fixed layer
+        // (photo theatre, forward sheet, emoji picker, …) still centres on the
+        // FULL viewport — so inside the card it appears shifted left by ~clip/2
+        // and is often clipped. Intercepting individual UIs can never keep up;
+        // pin every overlay to the visible strip [clip, W] instead.
+        window.__plumeCardActive = false;
+        window.__plumeCardClip = 0;
+        window.__plumeClipCache = 0;
+        window.__plumeFittedEls = window.__plumeFittedEls || [];
+
+        window.__plumeClearCardOverlays = function () {
+            var list = window.__plumeFittedEls || [];
+            for (var i = 0; i < list.length; i++) {
+                var el = list[i];
+                if (!el || !el.style) continue;
+                try {
+                    el.style.removeProperty("left");
+                    el.style.removeProperty("right");
+                    el.style.removeProperty("width");
+                    el.style.removeProperty("max-width");
+                    el.style.removeProperty("margin-left");
+                    el.style.removeProperty("padding-left");
+                    el.removeAttribute("data-plume-fit");
+                } catch (e) {}
+            }
+            window.__plumeFittedEls = [];
+            try {
+                document.documentElement.classList.remove("plume-card-active");
+                document.documentElement.style.removeProperty("--plume-clip");
+                document.documentElement.style.removeProperty("--plume-clip-half");
+            } catch (e) {}
+        };
+
+        window.__plumeFitCardOverlays = function () {
+            var clip = Number(window.__plumeCardClip)
+                || Number(window.__plumeClipCache) || 0;
+            if (!window.__plumeCardActive || clip < 80) {
+                window.__plumeClearCardOverlays();
+                return 0;
+            }
+            var W = window.innerWidth || document.documentElement.clientWidth || 0;
+            var H = window.innerHeight || document.documentElement.clientHeight || 0;
+            if (W < 200 || H < 200) return 0;
+            var half = Math.round(clip / 2);
+            var visibleW = W - clip;
+            try {
+                document.documentElement.classList.add("plume-card-active");
+                document.documentElement.style.setProperty("--plume-clip", clip + "px");
+                document.documentElement.style.setProperty("--plume-clip-half", half + "px");
+            } catch (e) {}
+
+            function mark(el, mode) {
+                if (!el || el.nodeType !== 1) return;
+                if (el.id && String(el.id).indexOf("plume-") === 0) return;
+                try {
+                    // Never move the page chrome itself.
+                    if (el.getAttribute("role") === "main") return;
+                    if (el.getAttribute("role") === "navigation") return;
+                    if (el.closest && el.closest('[role="navigation"]')
+                        && el.getAttribute("role") !== "dialog"
+                        && el.getAttribute("aria-modal") !== "true") return;
+                } catch (e) {}
+                var prev = el.getAttribute("data-plume-fit");
+                el.setAttribute("data-plume-fit", mode);
+                if (mode === "bleed") {
+                    // Full-bleed theatre / sheet: occupy exactly the visible strip.
+                    el.style.setProperty("left", clip + "px", "important");
+                    el.style.setProperty("right", "0px", "important");
+                    el.style.setProperty("width", "auto", "important");
+                    el.style.setProperty("max-width", "none", "important");
+                    el.style.setProperty("margin-left", "0px", "important");
+                } else {
+                    // Centred modal: shift its box by clip/2 so the visual centre
+                    // lands in the middle of the visible strip.
+                    el.style.setProperty("margin-left", half + "px", "important");
+                }
+                if (prev !== mode || window.__plumeFittedEls.indexOf(el) < 0) {
+                    window.__plumeFittedEls.push(el);
+                }
+            }
+
+            function consider(el) {
+                if (!el || el.nodeType !== 1) return;
+                var cs;
+                try { cs = window.getComputedStyle(el); } catch (e) { return; }
+                if (!cs) return;
+                if (cs.display === "none" || cs.visibility === "hidden") return;
+                var pos = cs.position;
+                var role = "";
+                try { role = el.getAttribute("role") || ""; } catch (e) {}
+                var modal = false;
+                try { modal = el.getAttribute("aria-modal") === "true"; } catch (e) {}
+                var isDialog = role === "dialog" || role === "alertdialog" || modal;
+                if (pos !== "fixed" && pos !== "sticky" && !isDialog) return;
+
+                var r = el.getBoundingClientRect();
+                if (r.width < 48 || r.height < 48) return;
+                // Sidebar / list chrome living in the clipped zone — leave alone.
+                if (r.right <= clip + 8) return;
+                // Already confined to the visible strip.
+                if (r.left >= clip - 2 && r.width <= visibleW + 12
+                    && el.getAttribute("data-plume-fit") === "bleed") return;
+
+                var coversWide = r.width >= Math.max(visibleW * 0.82, W * 0.55);
+                var coversTall = r.height >= H * 0.45;
+                var startsNearZero = r.left < 48;
+                if (isDialog && coversWide && (coversTall || startsNearZero)) {
+                    mark(el, "bleed");
+                    return;
+                }
+                if (isDialog) {
+                    mark(el, "shift");
+                    return;
+                }
+                // Fixed layer spanning most of the page (photo theatre backdrop).
+                if (pos === "fixed" && coversWide && coversTall && startsNearZero) {
+                    mark(el, "bleed");
+                    return;
+                }
+                // Fixed layer centred but still referencing the full viewport.
+                if (pos === "fixed" && coversWide && r.left < clip + 40
+                    && r.left + r.width > clip + visibleW * 0.5) {
+                    mark(el, "bleed");
+                }
+            }
+
+            var nBefore = window.__plumeFittedEls.length;
+            // Re-apply on everything we already touched (React often resets style).
+            for (var i = 0; i < window.__plumeFittedEls.length; i++) {
+                consider(window.__plumeFittedEls[i]);
+            }
+            try {
+                document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')
+                    .forEach(consider);
+            } catch (e) {}
+            // Overlays Meta mounts as direct (or near-direct) body children.
+            try {
+                var roots = [];
+                if (document.body) roots.push(document.body);
+                var mount = document.getElementById("root")
+                    || document.getElementById("app")
+                    || document.querySelector("#mount_0_0");
+                if (mount) roots.push(mount);
+                for (var ri = 0; ri < roots.length; ri++) {
+                    var kids = roots[ri].children;
+                    for (var k = 0; k < kids.length; k++) {
+                        consider(kids[k]);
+                        var grand = kids[k].children;
+                        for (var g = 0; g < Math.min(grand.length, 12); g++) {
+                            consider(grand[g]);
+                        }
+                    }
+                }
+            } catch (e) {}
+            // Drop detached nodes from the tracking list.
+            window.__plumeFittedEls = window.__plumeFittedEls.filter(function (el) {
+                return el && el.isConnected;
+            });
+            return window.__plumeFittedEls.length - nBefore;
+        };
+
+        window.__plumeInstallOverlayWatch = function () {
+            if (window.__plumeOverlayWatchInstalled) return;
+            window.__plumeOverlayWatchInstalled = true;
+            var scheduled = false;
+            function kick() {
+                if (scheduled) return;
+                scheduled = true;
+                requestAnimationFrame(function () {
+                    scheduled = false;
+                    try { window.__plumeFitCardOverlays(); } catch (e) {}
+                });
+            }
+            try {
+                var mo = new MutationObserver(kick);
+                mo.observe(document.documentElement, {
+                    childList: true, subtree: true, attributes: true,
+                    attributeFilter: ["style", "class", "role", "aria-modal"]
+                });
+                window.__plumeOverlayObserver = mo;
+            } catch (e) {}
+        };
+        window.__plumeInstallOverlayWatch();
+
+    """# + theaterDetectJS + #"""
+
+        // Hold the first tap on a conversation image, ask native to unclip +
+        // expand the card, then replay the click so Messenger's theatre opens
+        // into a viewport that already matches the window.
+        window.__plumeInstallTheaterArm = function () {};
+        window.__plumeReplayArmedImage = function () {
+            window.__plumeAllowTheaterClick = true;
+            try {
+                var img = document.querySelector("[data-plume-arm]");
+                if (img) {
+                    img.removeAttribute("data-plume-arm");
+                    var hit = img.closest("[role=button]") || img;
+                    hit.click();
+                }
+            } catch (e) {}
+            setTimeout(function () { window.__plumeAllowTheaterClick = false; }, 1200);
+            return true;
+        };
+        window.__plumeHideNativeViewer = function () {};
+        window.__plumeShowNativeViewer = function () { return false; };
+        window.__plumeInstallImageClick = window.__plumeInstallTheaterArm;
+        window.__plumeCenterCardMedia = function () { return false; };
+        window.__plumeSyncCardMedia = function () {
+            return window.__plumeFitCardOverlays();
+        };
+        window.__plumeClearCenteredMedia = function () {
+            window.__plumeClearCardOverlays();
+        };
+
         // --- Conversation list snapshot (chat bubbles) -----------------
         // Read ON DEMAND only — never an observer — so it costs nothing while
         // idle. Role/attr hooks only, so Meta's hashed class churn cannot break
@@ -284,7 +789,7 @@ enum InjectedScript {
                     // last message.
                     var label = "", preview = "", time = "";
                     try {
-                        var t = (r.innerText || "").split("\n")
+                        var t = (r.innerText || r.textContent || "").split("\n")
                                  .map(function (x) { return x.trim(); })
                                  .filter(Boolean);
                         label = t[0] || "";
@@ -343,10 +848,153 @@ enum InjectedScript {
             return JSON.stringify(out);
         };
 
+        // Nudge Messenger's virtualised inbox so older threads enter the DOM
+        // before the next `__plumeConvList` snapshot. Returns true when the
+        // scroll position actually moved (more history may still be available).
+        window.__plumeExpandConvList = function () {
+            try {
+                var rows = document.querySelectorAll('[role="row"]');
+                var seed = null;
+                for (var i = 0; i < rows.length; i++) {
+                    if (rows[i].closest('[role="main"]')) continue;
+                    if (rows[i].querySelector('a[role="link"][href*="/t/"]')) {
+                        seed = rows[i]; break;
+                    }
+                }
+                if (!seed) return false;
+                var el = seed.parentElement;
+                for (var d = 0; d < 14 && el; d++, el = el.parentElement) {
+                    if (el.scrollHeight <= el.clientHeight + 40) continue;
+                    var before = el.scrollTop;
+                    var step = Math.max(el.clientHeight * 0.95, 560);
+                    el.scrollTop = Math.min(el.scrollTop + step, el.scrollHeight);
+                    return el.scrollTop > before + 1;
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        // --- Right-click a sidebar row → native menu (delete chat) ------
+        // Only rows of the conversation list; a right-click anywhere else
+        // keeps WebKit's own menu.
+        document.addEventListener("contextmenu", function (e) {
+            try {
+                var row = e.target && e.target.closest && e.target.closest('[role="row"]');
+                if (!row || row.closest('[role="main"]')) return;
+                var link = row.querySelector('a[role="link"][href]');
+                if (!link || link.href.indexOf('/t/') === -1) return;
+                var name = (row.innerText || row.textContent || "").split("\n")
+                    .map(function (x) { return x.trim(); }).filter(Boolean)[0]
+                    || (link.getAttribute('aria-label') || '').split(',')[0];
+                e.preventDefault();
+                e.stopPropagation();
+                post("rowMenu", { href: link.href, name: String(name).trim().slice(0, 60) });
+            } catch (err) {}
+        }, true);
+
         // Note: the unread badge is derived natively by observing WKWebView's
         // `title` (a public, injection-independent signal), so there is no
         // badge bridge here.
     })();
+    """#
+
+    /// Patched onto a live Messenger session before each `showThread`, so a
+    /// page that was already open picks up refresh fixes without a full reload.
+    static let threadRefreshHelpers = #"""
+    window.__plumeOpenThread = function (href, force) {
+        try {
+            function id(u) {
+                var p = String(u || "").split("?")[0].replace(/\/+$/, "").split("/");
+                return p[p.length - 1] || "";
+            }
+            var want = id(href);
+            if (!want) return false;
+            if (id(location.href) === want && !force) return true;
+            var links = document.querySelectorAll('a[href*="/t/"]');
+            for (var i = 0; i < links.length; i++) {
+                if (id(links[i].href) !== want) continue;
+                var hit = links[i].querySelector('[role="gridcell"]') || links[i];
+                hit.click();
+                return true;
+            }
+        } catch (e) {}
+        return false;
+    };
+    window.__plumeScrollToLatest = function () {
+        try {
+            var main = document.querySelector('[role="main"]');
+            if (!main) return false;
+            var phrases = [
+                "jump to present", "tin nhan moi", "tin nhắn mới",
+                "new message", "new messages", "xem tin nhan moi",
+                "xem tin nhắn mới", "nhay den hien tai", "nhảy đến hiện tại"
+            ];
+            function norm(s) {
+                return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                    .replace(/[\u0111\u0110]/g, "d")
+                    .replace(/\s+/g, " ").trim().toLowerCase();
+            }
+            var controls = main.querySelectorAll('[role="button"], button, a[role="link"]');
+            for (var c = 0; c < controls.length; c++) {
+                var label = norm(controls[c].innerText || controls[c].getAttribute("aria-label"));
+                if (!label || label.length > 48) continue;
+                for (var p = 0; p < phrases.length; p++) {
+                    if (label.indexOf(phrases[p]) >= 0) {
+                        controls[c].click();
+                        break;
+                    }
+                }
+            }
+            var best = null, bestOver = 80;
+            var all = main.querySelectorAll("div");
+            for (var i = 0; i < all.length; i++) {
+                var e = all[i];
+                var over = e.scrollHeight - e.clientHeight;
+                if (over <= bestOver) continue;
+                var oy = window.getComputedStyle(e).overflowY;
+                if (oy !== "auto" && oy !== "scroll" && oy !== "overlay") continue;
+                best = e; bestOver = over;
+            }
+            if (!best) return false;
+            for (var n = 0; n < 5; n++) best.scrollTop = best.scrollHeight;
+            var rows = main.querySelectorAll('[role="row"], [role="gridcell"]');
+            if (rows.length) {
+                rows[rows.length - 1].scrollIntoView({ block: "end", inline: "nearest" });
+            }
+            best.scrollTop = best.scrollHeight;
+            return true;
+        } catch (e) { return false; }
+    };
+    // Always overwrite — a live Messenger session keeps the document-start
+    // script from the previous app launch, and `|| stub` would freeze theatre
+    // expand as a permanent no-op.
+    window.__plumeCardActive = window.__plumeCardActive || false;
+    window.__plumeCardClip = window.__plumeCardClip || 0;
+    window.__plumeClipCache = window.__plumeClipCache || 0;
+    """# + theaterDetectJS + #"""
+    window.__plumeInstallTheaterArm = function () {};
+    window.__plumeReplayArmedImage = function () {
+        window.__plumeAllowTheaterClick = true;
+        try {
+            var img = document.querySelector("[data-plume-arm]");
+            if (img) {
+                img.removeAttribute("data-plume-arm");
+                var hit = img.closest("[role=button]") || img;
+                hit.click();
+            }
+        } catch (e) {}
+        setTimeout(function () { window.__plumeAllowTheaterClick = false; }, 1200);
+        return true;
+    };
+    window.__plumeInstallOverlayWatch && window.__plumeInstallOverlayWatch();
+    window.__plumeInstallImageClick = window.__plumeInstallTheaterArm;
+    window.__plumeCenterCardMedia = function () { return false; };
+    window.__plumeSyncCardMedia = function () {
+        return window.__plumeFitCardOverlays && window.__plumeFitCardOverlays();
+    };
+    window.__plumeClearCenteredMedia = function () {
+        window.__plumeClearCardOverlays && window.__plumeClearCardOverlays();
+    };
     """#
 
     // MARK: - Tầng B stylesheets
@@ -363,21 +1011,38 @@ enum InjectedScript {
     /// starved new-message updates. Both were removed; don't reintroduce them.
     enum StyleID {
         static let density = "plume-density" // compact
+        static let cardThread = "plume-card-thread"
     }
 
     /// Compact conversation/message density (only active when Compact is on).
     /// Padding only — the former `min-height` on every gridcell was dropped: a
     /// forced height on rows of a virtualised list fights its own measurement.
-    ///
-    /// There is deliberately no rule here for the chat-bubble card. Hiding
-    /// Messenger's sidebar with CSS cannot work: the page reserves the icon
-    /// rail (44pt) and the conversation list (356pt) first and gives the
-    /// conversation only what is left, so at a card-sized viewport
-    /// `[role="main"]` measures 0pt tall and there is nothing left to reveal.
-    /// The card gives the page a wide viewport and clips the chrome instead.
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
     [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }
+    """
+
+    /// Hide Messenger chrome inside the bubble card. Caprine (issue 1718) and
+    /// every other messenger.com wrapper hit the same wall: below ~900px the
+    /// conversation is removed from the DOM, so a narrow clipped webview can
+    /// never host theatre/forward overlays. The card itself must be that wide;
+    /// these rules only hide the leftover sidebar columns.
+    static let cardThreadCSS = """
+    html.plume-card-thread [role="navigation"]:not(:has([role="main"])) {
+      display: none !important;
+      width: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      flex: 0 0 0 !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+    }
+    html.plume-card-thread [role="main"] {
+      width: 100% !important;
+      max-width: none !important;
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+    }
     """
 
     // Removed for performance: the indigo accent layer and the code-block
