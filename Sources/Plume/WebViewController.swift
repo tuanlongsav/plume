@@ -217,8 +217,11 @@ final class WebViewController: NSViewController {
     }
 
     // Reopen the thread tied to a clicked native notification.
-    func activateNotification(id: Int) {
-        webView.evaluateJavaScript("window.__plumeActivateNotification(\(id))", completionHandler: nil)
+    /// `completion` gets false when the page no longer knows that notification.
+    func activateNotification(id: Int, completion: ((Bool) -> Void)? = nil) {
+        webView.evaluateJavaScript("window.__plumeActivateNotification(\(id))") { result, _ in
+            completion?((result as? Bool) == true)
+        }
     }
 
     // MARK: Lending the web view to the chat bubble card

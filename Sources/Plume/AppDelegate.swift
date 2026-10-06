@@ -92,6 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if let id = response.notification.request.content.userInfo["plumeId"] as? Int {
+            // Bubble mode: the main window is hidden and its web view is on
+            // loan to the card, so surfacing it shows an empty shell — and
+            // pulls the user out of whatever fullscreen Space they were in.
+            if let bubbles = ChatBubbleController.shared {
+                bubbles.openFromNotification { [weak self] done in
+                    self?.controller.activateNotification(id: id, completion: done)
+                }
+                completionHandler()
+                return
+            }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             controller.activateNotification(id: id)

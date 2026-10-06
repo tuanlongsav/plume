@@ -27,8 +27,8 @@ else
     echo "▸ swift build ($CONFIG)…"
 fi
 cd "$ROOT"
-swift build -c "$CONFIG" "${ARCH_ARGS[@]}"
-BIN_PATH="$(swift build -c "$CONFIG" "${ARCH_ARGS[@]}" --show-bin-path)/$APP_NAME"
+swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}
+BIN_PATH="$(swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --show-bin-path)/$APP_NAME"
 
 echo "▸ assembling $APP …"
 rm -rf "$APP"

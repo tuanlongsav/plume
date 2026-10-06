@@ -167,6 +167,16 @@ struct BubbleConversation {
         }
     }
 
+    /// A thread the chain has no head for — enough to put it in the card.
+    init(thread: URL) {
+        url = thread
+        name = "Messenger"
+        avatar = nil
+        unread = false
+        preview = ""
+        time = ""
+    }
+
     init?(raw: Raw) {
         guard let thread = ThreadURL.canonical(from: URL(string: raw.href)) else { return nil }
         url = thread
@@ -2105,7 +2115,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     /// Show a conversation in the shared card. One web view serves every
     /// bubble, so adding bubbles costs a window, not a web process.
-    private func open(_ convo: BubbleConversation?) {
+    private func open(_ convo: BubbleConversation?, toggle: Bool = true) {
         collapseWork?.cancel(); collapseWork = nil
         PlumeTrace.log("\n===== open(\(convo?.name ?? "APP")) =====")
         for (i, sc) in NSScreen.screens.enumerated() {
@@ -2128,7 +2138,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // link inside the card leaves `currentThread` behind, and then clicking
         // that head folds the card away instead of returning to it.
         let live = ThreadURL.canonical(from: webView.url)
-        if isExpanded, card.isVisible,
+        if toggle, isExpanded, card.isVisible,
            (convo == nil && showingPicker) || (convo != nil && convo?.url == live) {
             collapse(); return
         }
@@ -2216,6 +2226,63 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         // Newest-first order may have changed while the chain was idle.
         refreshUnreadFlags()
+    }
+
+    /// A native notification was clicked. `activate` replays the click in the
+    /// page, which routes Messenger to that conversation; the card then opens
+    /// on wherever the page landed — never the main window, never NSApp.activate.
+    func openFromNotification(_ activate: (@escaping (Bool) -> Void) -> Void) {
+        let before = ThreadURL.canonical(from: webView.url)
+        activate { [weak self] known in
+            guard let self else { return }
+            guard known else {
+                // The page has forgotten it (reloaded since): offer the list.
+                if !(self.isExpanded && self.showingPicker) {
+                    self.lastOpenedIndex = 0
+                    self.open(nil)
+                }
+                return
+            }
+            self.awaitNotificationThread(from: before, tries: 8)
+        }
+    }
+
+    /// Messenger routes asynchronously after the click; wait for the address
+    /// to move, and settle for where it already is when it doesn't (the
+    /// notification was for the conversation the page had open).
+    private func awaitNotificationThread(from before: URL?, tries: Int) {
+        let now = ThreadURL.canonical(from: webView.url)
+        if tries > 0, now == nil || now == before {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.awaitNotificationThread(from: before, tries: tries - 1)
+            }
+            return
+        }
+        guard !bubbles.isEmpty else { return }
+        guard let thread = now else {
+            if !(isExpanded && showingPicker) { lastOpenedIndex = 0; open(nil) }
+            return
+        }
+        // Already showing it: `open` would read that as "same bubble twice"
+        // and fold the card away.
+        if isExpanded, card.isVisible, !showingPicker {
+            currentThread = thread
+            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == thread }) {
+                lastOpenedIndex = i
+                wake()
+            }
+            promoteOverlayStack()
+            card.makeKey()
+            return
+        }
+        if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == thread }),
+           let convo = conversation(of: bubbles[i]) {
+            lastOpenedIndex = i
+            open(convo, toggle: false)
+        } else {
+            lastOpenedIndex = 0
+            open(BubbleConversation(thread: thread), toggle: false)
+        }
     }
 
     /// Pin card + heads above fullscreen app content. Bubbles stay above the
@@ -2623,7 +2690,15 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // orderOut first when hopping displays: even with constrainFrameRect
         // overridden, a visible panel can keep its old screen association for
         // one turn and paint on the wrong monitor.
-        if card.screen !== destScreen, card.screen != nil {
+        //
+        // The hop owns both halves of that. Ordering out resigns key, which
+        // reads as "clicked away" and folded the card 0.6s after it arrived;
+        // and leaving the re-show to callers lost the card for good whenever
+        // their own idea of "the display changed" disagreed with this one.
+        let hop = card.isVisible && card.screen != nil && card.screen !== destScreen
+        let wasKey = card.isKeyWindow
+        if hop {
+            relocatingCard = true
             card.orderOut(nil)
         }
         let dx = abs(card.frame.origin.x - dest.origin.x)
@@ -2632,7 +2707,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             card.setFrame(dest, display: false)
         }
         PlumeOverlay.apply(to: card)
-        if promote, card.isVisible { card.orderFrontRegardless() }
+        if hop {
+            card.orderFrontRegardless()
+            if wasKey { card.makeKey() }
+            relocatingCard = false
+        } else if promote, card.isVisible {
+            card.orderFrontRegardless()
+        }
         PlumeTrace.log("  positionCard got=\(PlumeTrace.r(card.frame)) screen=\(PlumeTrace.r(card.screen?.frame ?? .zero))")
     }
 
@@ -2688,7 +2769,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         guard isExpanded else { return }
         // Dragging a docked head undocks the card but keeps it visible; collapsing
         // here would fold the chat mid-gesture while cardTravelsWithChain is set.
-        guard !dragging, !cardTravelsWithChain else { return }
+        guard !dragging, !cardTravelsWithChain, !relocatingCard else { return }
         // File/photo attach sheet steals key — do not treat that as "click away".
         guard !attachmentPickerActive else { return }
         let work = DispatchWorkItem { [weak self] in
@@ -2790,6 +2871,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// started while docked — instead of orderOut'ing and leaving the chat behind.
     private var cardTravelsWithChain = false
     private var lastCardTravelScreen: NSScreen?
+    /// True while `positionCard` has the card ordered out to move it between
+    /// displays — that resignKey is ours, not the user clicking away.
+    private var relocatingCard = false
     /// Sticky Dock focus — only changes on real pointer motion, with hysteresis,
     /// so packing/spring motion of `centres` cannot flip the zoom every frame.
     private var hoverFocus: Int?
