@@ -1539,15 +1539,15 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private var sidebarConstraint: NSLayoutConstraint?
 
     /// When Messenger's photo theatre opens, expand the card to nearly fill the
-    /// display and temporarily unclip the sidebar — theatre centres on the full
-    /// page, so only a wide unclipped window lays it out correctly.
+    /// display — theatre centres on the full page, so only a wide window lays
+    /// it out correctly.
     private var theaterMode = false
     private var preTheaterSize: NSSize?
     /// Debounce theatre open/close so a one-frame DOM blip cannot thrash size.
     private var theaterOpenTicks = 0
     private var theaterCloseTicks = 0
-    /// After we expand for a tap, theatre has not mounted yet — do not restore
-    /// the small card until this deadline (or until theatre is seen, then lost).
+    /// Right after expanding, theatre may still be re-laying out — do not
+    /// restore the small card until this deadline (or until it is seen, then lost).
     private var theaterHoldUntil: CFTimeInterval = 0
     private var mediaCenterTimer: Timer?
     private var overlayPromoteWork: [DispatchWorkItem] = []
@@ -1644,7 +1644,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         theaterHoldUntil = CACurrentMediaTime() + 2.0
         preTheaterSize = card.contentRect(forFrameRect: card.frame).size
 
-        // Unclip: give Messenger the full page so theatre centres in the card.
+        // Give Messenger the full page so theatre centres in the card.
         sidebarConstraint?.constant = Self.inset
         pushCardClip()
 

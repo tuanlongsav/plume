@@ -272,10 +272,10 @@ final class PDFViewerWindowController: NSWindowController {
                     let scratch = try fm.url(for: .itemReplacementDirectory,
                                              in: .userDomainMask,
                                              appropriateFor: dest, create: true)
+                    defer { try? fm.removeItem(at: scratch) }
                     let staged = scratch.appendingPathComponent(dest.lastPathComponent)
                     try fm.copyItem(at: self.fileURL, to: staged)
                     _ = try fm.replaceItemAt(dest, withItemAt: staged)
-                    try? fm.removeItem(at: scratch)
                 } else {
                     try fm.copyItem(at: self.fileURL, to: dest)
                 }

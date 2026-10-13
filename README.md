@@ -56,7 +56,8 @@ SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
 ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
 `install.sh` runs that build, quits a running Plume, replaces the copy in
 `/Applications` and opens it — login and settings carry over, though a new
-ad-hoc signature can make macOS ask for camera/mic access again.
+ad-hoc signature can make macOS ask for camera/mic (and, the first time a
+non-PDF attachment is saved to ~/Downloads, Downloads-folder) access again.
 `make_dmg.sh` wraps that into a compressed DMG with an `/Applications`
 symlink. The icon — a feather on a blue→indigo gradient — is drawn
 programmatically by `Scripts/icon_gen.swift`; rerun `make_icon.sh` only when
