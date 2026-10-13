@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             defer: false
         )
         window.title = "Plume"
+        // We hold the window strongly; AppKit must not release it on close too.
+        window.isReleasedWhenClosed = false
         window.contentViewController = controller
         window.minSize = NSSize(width: 420, height: 520)
         window.setFrameAutosaveName("PlumeMainWindow")   // remember size/position

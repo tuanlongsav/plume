@@ -34,6 +34,11 @@ echo "▸ assembling $APP …"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
+if [[ "$CONFIG" == "release" ]]; then
+    # Local symbols only matter to a debugger; dropping them shrinks the
+    # binary. Done before codesign, which re-signs the result below.
+    strip -x "$APP/Contents/MacOS/$APP_NAME"
+fi
 
 ICON_SRC="$ROOT/Resources/Plume.icns"
 if [[ -f "$ICON_SRC" ]]; then

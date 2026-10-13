@@ -265,10 +265,20 @@ final class PDFViewerWindowController: NSWindowController {
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, let dest = panel.url else { return }
             do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
+                let fm = FileManager.default
+                if fm.fileExists(atPath: dest.path) {
+                    // Copy first, then swap it in: deleting the old file up
+                    // front lost it whenever the copy then failed.
+                    let scratch = try fm.url(for: .itemReplacementDirectory,
+                                             in: .userDomainMask,
+                                             appropriateFor: dest, create: true)
+                    let staged = scratch.appendingPathComponent(dest.lastPathComponent)
+                    try fm.copyItem(at: self.fileURL, to: staged)
+                    _ = try fm.replaceItemAt(dest, withItemAt: staged)
+                    try? fm.removeItem(at: scratch)
+                } else {
+                    try fm.copyItem(at: self.fileURL, to: dest)
                 }
-                try FileManager.default.copyItem(at: self.fileURL, to: dest)
             } catch {
                 self.showError(error)
             }

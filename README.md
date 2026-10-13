@@ -42,6 +42,8 @@ only injects CSS/JS and can't touch Messenger's own render logic. Recovery:
 ## Build
 
 ```sh
+swift test                             # unit tests (needs macOS)
+bash Scripts/install.sh                # build release → /Applications/Plume.app, relaunch
 bash Scripts/build_app.sh release     # → build/Plume.app
 open build/Plume.app
 
@@ -52,6 +54,9 @@ bash Scripts/make_icon.sh              # regenerate Resources/Plume.icns
 Requires Xcode command-line tools (Swift 6). `build_app.sh` compiles with
 SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
 ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
+`install.sh` runs that build, quits a running Plume, replaces the copy in
+`/Applications` and opens it — login and settings carry over, though a new
+ad-hoc signature can make macOS ask for camera/mic access again.
 `make_dmg.sh` wraps that into a compressed DMG with an `/Applications`
 symlink. The icon — a feather on a blue→indigo gradient — is drawn
 programmatically by `Scripts/icon_gen.swift`; rerun `make_icon.sh` only when

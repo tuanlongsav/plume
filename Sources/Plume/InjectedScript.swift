@@ -375,7 +375,9 @@ enum InjectedScript {
                 el.id = id;
                 (document.head || document.documentElement).appendChild(el);
             }
-            el.textContent = css;
+            // Rewriting identical text still re-parses the sheet and restyles
+            // the whole document — and this runs on every thread open.
+            if (el.textContent !== css) el.textContent = css;
         };
         window.__plumeRemoveStyle = function (id) {
             const el = document.getElementById(id);
@@ -544,223 +546,13 @@ enum InjectedScript {
             return n;
         };
 
-        // --- Card chrome-clip: fit Messenger overlays to the visible strip ----
-        //
-        // ROOT CAUSE: the bubble card gives Messenger a WIDE viewport and shifts
-        // the WKWebView left by `clip` so the sidebar/list fall outside the card.
-        // Conversation chrome looks correct, but every position:fixed layer
-        // (photo theatre, forward sheet, emoji picker, …) still centres on the
-        // FULL viewport — so inside the card it appears shifted left by ~clip/2
-        // and is often clipped. Intercepting individual UIs can never keep up;
-        // pin every overlay to the visible strip [clip, W] instead.
-        window.__plumeCardActive = false;
-        window.__plumeCardClip = 0;
-        window.__plumeClipCache = 0;
-        window.__plumeFittedEls = window.__plumeFittedEls || [];
-
-        window.__plumeClearCardOverlays = function () {
-            var list = window.__plumeFittedEls || [];
-            for (var i = 0; i < list.length; i++) {
-                var el = list[i];
-                if (!el || !el.style) continue;
-                try {
-                    el.style.removeProperty("left");
-                    el.style.removeProperty("right");
-                    el.style.removeProperty("width");
-                    el.style.removeProperty("max-width");
-                    el.style.removeProperty("margin-left");
-                    el.style.removeProperty("padding-left");
-                    el.removeAttribute("data-plume-fit");
-                } catch (e) {}
-            }
-            window.__plumeFittedEls = [];
-            try {
-                document.documentElement.classList.remove("plume-card-active");
-                document.documentElement.style.removeProperty("--plume-clip");
-                document.documentElement.style.removeProperty("--plume-clip-half");
-            } catch (e) {}
-        };
-
-        window.__plumeFitCardOverlays = function () {
-            var clip = Number(window.__plumeCardClip)
-                || Number(window.__plumeClipCache) || 0;
-            if (!window.__plumeCardActive || clip < 80) {
-                window.__plumeClearCardOverlays();
-                return 0;
-            }
-            var W = window.innerWidth || document.documentElement.clientWidth || 0;
-            var H = window.innerHeight || document.documentElement.clientHeight || 0;
-            if (W < 200 || H < 200) return 0;
-            var half = Math.round(clip / 2);
-            var visibleW = W - clip;
-            try {
-                document.documentElement.classList.add("plume-card-active");
-                document.documentElement.style.setProperty("--plume-clip", clip + "px");
-                document.documentElement.style.setProperty("--plume-clip-half", half + "px");
-            } catch (e) {}
-
-            function mark(el, mode) {
-                if (!el || el.nodeType !== 1) return;
-                if (el.id && String(el.id).indexOf("plume-") === 0) return;
-                try {
-                    // Never move the page chrome itself.
-                    if (el.getAttribute("role") === "main") return;
-                    if (el.getAttribute("role") === "navigation") return;
-                    if (el.closest && el.closest('[role="navigation"]')
-                        && el.getAttribute("role") !== "dialog"
-                        && el.getAttribute("aria-modal") !== "true") return;
-                } catch (e) {}
-                var prev = el.getAttribute("data-plume-fit");
-                el.setAttribute("data-plume-fit", mode);
-                if (mode === "bleed") {
-                    // Full-bleed theatre / sheet: occupy exactly the visible strip.
-                    el.style.setProperty("left", clip + "px", "important");
-                    el.style.setProperty("right", "0px", "important");
-                    el.style.setProperty("width", "auto", "important");
-                    el.style.setProperty("max-width", "none", "important");
-                    el.style.setProperty("margin-left", "0px", "important");
-                } else {
-                    // Centred modal: shift its box by clip/2 so the visual centre
-                    // lands in the middle of the visible strip.
-                    el.style.setProperty("margin-left", half + "px", "important");
-                }
-                if (prev !== mode || window.__plumeFittedEls.indexOf(el) < 0) {
-                    window.__plumeFittedEls.push(el);
-                }
-            }
-
-            function consider(el) {
-                if (!el || el.nodeType !== 1) return;
-                var cs;
-                try { cs = window.getComputedStyle(el); } catch (e) { return; }
-                if (!cs) return;
-                if (cs.display === "none" || cs.visibility === "hidden") return;
-                var pos = cs.position;
-                var role = "";
-                try { role = el.getAttribute("role") || ""; } catch (e) {}
-                var modal = false;
-                try { modal = el.getAttribute("aria-modal") === "true"; } catch (e) {}
-                var isDialog = role === "dialog" || role === "alertdialog" || modal;
-                if (pos !== "fixed" && pos !== "sticky" && !isDialog) return;
-
-                var r = el.getBoundingClientRect();
-                if (r.width < 48 || r.height < 48) return;
-                // Sidebar / list chrome living in the clipped zone — leave alone.
-                if (r.right <= clip + 8) return;
-                // Already confined to the visible strip.
-                if (r.left >= clip - 2 && r.width <= visibleW + 12
-                    && el.getAttribute("data-plume-fit") === "bleed") return;
-
-                var coversWide = r.width >= Math.max(visibleW * 0.82, W * 0.55);
-                var coversTall = r.height >= H * 0.45;
-                var startsNearZero = r.left < 48;
-                if (isDialog && coversWide && (coversTall || startsNearZero)) {
-                    mark(el, "bleed");
-                    return;
-                }
-                if (isDialog) {
-                    mark(el, "shift");
-                    return;
-                }
-                // Fixed layer spanning most of the page (photo theatre backdrop).
-                if (pos === "fixed" && coversWide && coversTall && startsNearZero) {
-                    mark(el, "bleed");
-                    return;
-                }
-                // Fixed layer centred but still referencing the full viewport.
-                if (pos === "fixed" && coversWide && r.left < clip + 40
-                    && r.left + r.width > clip + visibleW * 0.5) {
-                    mark(el, "bleed");
-                }
-            }
-
-            var nBefore = window.__plumeFittedEls.length;
-            // Re-apply on everything we already touched (React often resets style).
-            for (var i = 0; i < window.__plumeFittedEls.length; i++) {
-                consider(window.__plumeFittedEls[i]);
-            }
-            try {
-                document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')
-                    .forEach(consider);
-            } catch (e) {}
-            // Overlays Meta mounts as direct (or near-direct) body children.
-            try {
-                var roots = [];
-                if (document.body) roots.push(document.body);
-                var mount = document.getElementById("root")
-                    || document.getElementById("app")
-                    || document.querySelector("#mount_0_0");
-                if (mount) roots.push(mount);
-                for (var ri = 0; ri < roots.length; ri++) {
-                    var kids = roots[ri].children;
-                    for (var k = 0; k < kids.length; k++) {
-                        consider(kids[k]);
-                        var grand = kids[k].children;
-                        for (var g = 0; g < Math.min(grand.length, 12); g++) {
-                            consider(grand[g]);
-                        }
-                    }
-                }
-            } catch (e) {}
-            // Drop detached nodes from the tracking list.
-            window.__plumeFittedEls = window.__plumeFittedEls.filter(function (el) {
-                return el && el.isConnected;
-            });
-            return window.__plumeFittedEls.length - nBefore;
-        };
-
-        window.__plumeInstallOverlayWatch = function () {
-            if (window.__plumeOverlayWatchInstalled) return;
-            window.__plumeOverlayWatchInstalled = true;
-            var scheduled = false;
-            function kick() {
-                if (scheduled) return;
-                scheduled = true;
-                requestAnimationFrame(function () {
-                    scheduled = false;
-                    try { window.__plumeFitCardOverlays(); } catch (e) {}
-                });
-            }
-            try {
-                var mo = new MutationObserver(kick);
-                mo.observe(document.documentElement, {
-                    childList: true, subtree: true, attributes: true,
-                    attributeFilter: ["style", "class", "role", "aria-modal"]
-                });
-                window.__plumeOverlayObserver = mo;
-            } catch (e) {}
-        };
-        window.__plumeInstallOverlayWatch();
+        // Removed: the card's overlay-fitting pass. It re-fit every
+        // position:fixed layer into a clipped strip, driven by a document-wide
+        // MutationObserver. The clip has been 0 since chrome became CSS-hidden,
+        // so it only ever ran its clear branch — and that rewrote <html>'s class
+        // attribute, re-fired the observer and scheduled another frame, forever.
 
     """# + theaterDetectJS + #"""
-
-        // Hold the first tap on a conversation image, ask native to unclip +
-        // expand the card, then replay the click so Messenger's theatre opens
-        // into a viewport that already matches the window.
-        window.__plumeInstallTheaterArm = function () {};
-        window.__plumeReplayArmedImage = function () {
-            window.__plumeAllowTheaterClick = true;
-            try {
-                var img = document.querySelector("[data-plume-arm]");
-                if (img) {
-                    img.removeAttribute("data-plume-arm");
-                    var hit = img.closest("[role=button]") || img;
-                    hit.click();
-                }
-            } catch (e) {}
-            setTimeout(function () { window.__plumeAllowTheaterClick = false; }, 1200);
-            return true;
-        };
-        window.__plumeHideNativeViewer = function () {};
-        window.__plumeShowNativeViewer = function () { return false; };
-        window.__plumeInstallImageClick = window.__plumeInstallTheaterArm;
-        window.__plumeCenterCardMedia = function () { return false; };
-        window.__plumeSyncCardMedia = function () {
-            return window.__plumeFitCardOverlays();
-        };
-        window.__plumeClearCenteredMedia = function () {
-            window.__plumeClearCardOverlays();
-        };
 
         // --- Conversation list snapshot (chat bubbles) -----------------
         // Read ON DEMAND only — never an observer — so it costs nothing while
@@ -964,36 +756,6 @@ enum InjectedScript {
             best.scrollTop = best.scrollHeight;
             return true;
         } catch (e) { return false; }
-    };
-    // Always overwrite — a live Messenger session keeps the document-start
-    // script from the previous app launch, and `|| stub` would freeze theatre
-    // expand as a permanent no-op.
-    window.__plumeCardActive = window.__plumeCardActive || false;
-    window.__plumeCardClip = window.__plumeCardClip || 0;
-    window.__plumeClipCache = window.__plumeClipCache || 0;
-    """# + theaterDetectJS + #"""
-    window.__plumeInstallTheaterArm = function () {};
-    window.__plumeReplayArmedImage = function () {
-        window.__plumeAllowTheaterClick = true;
-        try {
-            var img = document.querySelector("[data-plume-arm]");
-            if (img) {
-                img.removeAttribute("data-plume-arm");
-                var hit = img.closest("[role=button]") || img;
-                hit.click();
-            }
-        } catch (e) {}
-        setTimeout(function () { window.__plumeAllowTheaterClick = false; }, 1200);
-        return true;
-    };
-    window.__plumeInstallOverlayWatch && window.__plumeInstallOverlayWatch();
-    window.__plumeInstallImageClick = window.__plumeInstallTheaterArm;
-    window.__plumeCenterCardMedia = function () { return false; };
-    window.__plumeSyncCardMedia = function () {
-        return window.__plumeFitCardOverlays && window.__plumeFitCardOverlays();
-    };
-    window.__plumeClearCenteredMedia = function () {
-        window.__plumeClearCardOverlays && window.__plumeClearCardOverlays();
     };
     """#
 

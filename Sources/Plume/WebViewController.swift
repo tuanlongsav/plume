@@ -62,8 +62,6 @@ final class WebViewController: NSViewController {
         let bridge = ScriptBridge(self)
         controller.add(bridge, name: "notify")
         controller.add(bridge, name: "notifyClose")
-        controller.add(bridge, name: "cardMedia")
-        controller.add(bridge, name: "openImage")
         controller.add(bridge, name: "rowMenu")
         config.userContentController = controller
 
@@ -450,21 +448,6 @@ extension WebViewController {
         UNUserNotificationCenter.current()
             .removeDeliveredNotifications(withIdentifiers: ["plume-\(id)"])
     }
-
-    func handleCardMedia(_ body: [String: Any]) {
-        let open = body["open"] as? Bool ?? false
-        NotificationCenter.default.post(
-            name: .plumeCardMedia, object: nil,
-            userInfo: ["open": open])
-    }
-
-    func handleOpenImage(_ body: [String: Any]) {
-        let url = (body["url"] as? String).flatMap(URL.init(string:))
-        var info: [String: Any] = [:]
-        if let url { info["url"] = url }
-        NotificationCenter.default.post(
-            name: .plumeOpenImage, object: nil, userInfo: info)
-    }
 }
 
 // MARK: - Navigation
@@ -753,8 +736,33 @@ extension WebViewController: WKDownloadDelegate {
         if url.pathExtension.lowercased() == "pdf" {
             PDFViewerWindowController.open(url)                   // native in-app viewer
         } else {
-            NSWorkspace.shared.activateFileViewerSelecting([url]) // reveal other files
+            // Revealing the temp copy looked like a finished download, but
+            // `clearDownloadCache` deletes it at the next launch. Keep the file
+            // where a browser would; fall back to the temp copy if that fails.
+            let kept = Self.moveToDownloads(url) ?? url
+            NSWorkspace.shared.activateFileViewerSelecting([kept])
         }
+    }
+
+    /// Move a finished attachment into ~/Downloads under a free name
+    /// ("name.ext", "name (2).ext", …). Returns nil if it can't.
+    static func moveToDownloads(_ file: URL) -> URL? {
+        let fm = FileManager.default
+        guard let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        else { return nil }
+        let ext = file.pathExtension
+        let stem = file.deletingPathExtension().lastPathComponent
+        for n in 1...999 {
+            let name = n == 1 ? file.lastPathComponent
+                : (ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)")
+            let dest = downloads.appendingPathComponent(name)
+            if fm.fileExists(atPath: dest.path) { continue }
+            guard (try? fm.moveItem(at: file, to: dest)) != nil else { return nil }
+            // The per-download temp folder is empty now.
+            try? fm.removeItem(at: file.deletingLastPathComponent())
+            return dest
+        }
+        return nil
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
@@ -793,8 +801,6 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         switch message.name {
         case "notify":      controller?.handleNotify(body)
         case "notifyClose": controller?.handleNotifyClose(body)
-        case "cardMedia":   controller?.handleCardMedia(body)
-        case "openImage":   controller?.handleOpenImage(body)
         case "rowMenu":     controller?.handleRowMenu(body)
         default: break
         }

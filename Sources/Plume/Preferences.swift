@@ -46,13 +46,21 @@ enum Preferences {
     /// Resting diameter of a chat head. Everything else in the chain — the
     /// magnified size, the panel canvas and the spacing between heads — is
     /// derived from this, so the chain stays proportioned at any size.
+    /// Cached: the chain's geometry reads it many times per animation frame.
     static var bubbleSize: CGFloat {
         get {
-            guard let v = defaults.object(forKey: "plume.bubbleSize") as? Double else { return 46 }
-            return CGFloat(v)
+            if let v = cachedBubbleSize { return v }
+            let v = (defaults.object(forKey: "plume.bubbleSize") as? Double).map { CGFloat($0) } ?? 46
+            cachedBubbleSize = v
+            return v
         }
-        set { defaults.set(Double(max(32, min(newValue, 80))), forKey: "plume.bubbleSize") }
+        set {
+            let v = max(32, min(newValue, 80))
+            defaults.set(Double(v), forKey: "plume.bubbleSize")
+            cachedBubbleSize = v
+        }
     }
+    private static var cachedBubbleSize: CGFloat?
 
     /// When true, the bubble chain teleports onto the display under the cursor.
     /// When false, heads stay where the user parked them (drag to move displays).

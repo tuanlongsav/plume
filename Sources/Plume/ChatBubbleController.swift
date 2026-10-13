@@ -3,13 +3,14 @@ import QuartzCore
 import WebKit
 
 // Diagnostic multi-display traces. No-op in release so notarized builds never
-// write contact names / cursor positions to ~/plume-trace.log.
+// write contact names / cursor positions to ~/plume-trace.log. The autoclosure
+// keeps release builds from even formatting the line — some run every frame.
 enum PlumeTrace {
     static let url = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("plume-trace.log")
-    static func log(_ line: String) {
+    static func log(_ line: @autoclosure () -> String) {
         #if DEBUG
-        guard let d = (line + "\n").data(using: .utf8) else { return }
+        guard let d = (line() + "\n").data(using: .utf8) else { return }
         if let h = try? FileHandle(forWritingTo: url) {
             h.seekToEndOfFile(); h.write(d); try? h.close()
         } else {
@@ -81,12 +82,6 @@ private final class ChipMenuLift: NSObject, NSMenuDelegate {
 extension Notification.Name {
     /// Posted by the main web view whenever the dock badge changes.
     static let plumeUnreadChanged = Notification.Name("plume.unreadChanged")
-    /// Posted when Messenger's in-page photo/video theater opens or closes
-    /// inside the bubble card (`userInfo["open"]` as Bool).
-    static let plumeCardMedia = Notification.Name("plume.cardMedia")
-    /// User tapped a conversation image while the bubble card is active —
-    /// `userInfo["url"]` is a URL for the native in-card photo viewer.
-    static let plumeOpenImage = Notification.Name("plume.openImage")
 }
 
 // MARK: - Avatar cache
@@ -399,8 +394,6 @@ enum Chain {
     static let projectTauY: CGFloat = 0.06
     static let dragSlop: CGFloat = 3
 
-    /// Unused for slot-based Dock weights; kept as the "near column" hit slop.
-    static var magRadius: CGFloat { step * 1.5 }
     /// Constant visual edge gap while packing (rest and magnified).
     static var magGap: CGFloat { step - base }
     /// Centre-to-centre between two live diameters (Dock packing).
@@ -1113,115 +1106,6 @@ final class ConversationListView: NSView {
     }
 }
 
-// MARK: - In-card photo viewer
-
-private final class PassthroughImageView: NSImageView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-/// Full-bleed black overlay centred in the bubble *card* (not the chrome-clipped
-/// web view). Messenger's own theatre always looks left-shifted here.
-private final class CardPhotoOverlay: NSView {
-    var onClose: (() -> Void)?
-    private let imageView = PassthroughImageView()
-    private let closeButton = NSButton()
-    private var loadTask: URLSessionDataTask?
-    private var keyMonitor: Any?
-    private var cookieSession: URLSession?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.94).cgColor
-
-        imageView.imageScaling = .scaleProportionallyDown
-        imageView.imageAlignment = .alignCenter
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(imageView)
-
-        closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill",
-                                    accessibilityDescription: "Close")
-        closeButton.bezelStyle = .inline
-        closeButton.isBordered = false
-        closeButton.contentTintColor = .white
-        closeButton.target = self
-        closeButton.action = #selector(close)
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(closeButton)
-
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 36),
-            imageView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
-            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            closeButton.widthAnchor.constraint(equalToConstant: 28),
-            closeButton.heightAnchor.constraint(equalToConstant: 28),
-        ])
-
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 { // Escape
-                self?.close()
-                return nil
-            }
-            return event
-        }
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        loadTask?.cancel()
-        cookieSession?.invalidateAndCancel()
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-    }
-
-    func display(_ image: NSImage) {
-        imageView.image = image
-    }
-
-    /// Load via a URLSession seeded with the web view's cookies so fbcdn
-    /// auth'd assets resolve the same way the page does.
-    func load(url: URL, cookieStore: WKHTTPCookieStore) {
-        loadTask?.cancel()
-        cookieSession?.invalidateAndCancel()
-        if let cached = AvatarCache.image(for: url) {
-            imageView.image = cached
-            return
-        }
-        cookieStore.getAllCookies { [weak self] cookies in
-            guard let self else { return }
-            let jar = HTTPCookieStorage()
-            for cookie in cookies {
-                jar.setCookie(cookie)
-            }
-            let config = URLSessionConfiguration.ephemeral
-            config.httpCookieStorage = jar
-            config.httpShouldSetCookies = true
-            config.httpCookieAcceptPolicy = .always
-            let session = URLSession(configuration: config)
-            self.cookieSession = session
-            let task = session.dataTask(with: url) { [weak self] data, _, _ in
-                guard let data, let image = NSImage(data: data) else { return }
-                DispatchQueue.main.async {
-                    AvatarCache.store(image, for: url)
-                    self?.imageView.image = image
-                }
-            }
-            self.loadTask = task
-            task.resume()
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        close()
-    }
-
-    @objc private func close() { onClose?() }
-}
-
 // MARK: - Controller
 
 /// Android-style chat heads: one bubble per conversation, each showing that
@@ -1322,12 +1206,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(unreadChanged(_:)),
             name: .plumeUnreadChanged, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(cardMediaChanged(_:)),
-            name: .plumeCardMedia, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(openImageRequested(_:)),
-            name: .plumeOpenImage, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -1623,16 +1501,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private var observingURL = false
 
-    /// Put `view` in the card with an even margin on every side.
-    ///
-    /// The web view is the exception: it is laid out WIDER than the card and
-    /// pushed left by `sidebarInset`, so Messenger's icon rail and conversation
-    /// list fall outside the card's bounds. Hiding them with CSS cannot work —
-    /// Messenger reserves the rail (44pt) and the list (356pt) first and only
-    /// renders the conversation in what is left, so at a card-sized viewport
-    /// `[role="main"]` comes back 0pt tall and there is nothing to reveal.
-    /// Giving the page a wide viewport and clipping is the only version of this
-    /// that has no race and nothing to blank.
+    /// Put `view` in the card with an even margin on every side. Messenger's
+    /// chrome columns are hidden by `cardThreadCSS` (see `pushCardClip`), not
+    /// clipped, so the web view gets the same margins as everything else.
     private func installContent(_ view: NSView) {
         guard let content = card.contentView else { return }
         content.subviews.forEach { $0.removeFromSuperview() }
@@ -1665,57 +1536,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         NSLayoutConstraint.activate(rules)
     }
 
-    /// How far Messenger's chrome column extends from the left edge of the
-    /// page. Seeded with what the real DOM reports and re-measured after every
-    /// load, so a Messenger redesign corrects itself instead of breaking.
-    private var sidebarInset: CGFloat = 432
     private var sidebarConstraint: NSLayoutConstraint?
-
-    private var lastMeasuredInset: CGFloat = 0
-    private var stableMeasurements = 0
-
-    private func measureSidebar() {
-        let js = """
-        (function () {
-          // The conversation's own left edge is the exact answer, and it is
-          // only trustworthy once the conversation has actually rendered.
-          var main = document.querySelector('[role="main"]');
-          if (main) {
-            var b = main.getBoundingClientRect();
-            if (b.height > 120 && b.left > 100) return Math.round(b.left);
-          }
-          // Otherwise fall back to where Messenger's chrome column ends.
-          var edge = 0;
-          document.querySelectorAll('[role="navigation"]').forEach(function (n) {
-            if (main && n.contains(main)) return;          // it wraps the thread: not chrome
-            var r = n.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) edge = Math.max(edge, r.right);
-          });
-          return edge;
-        })();
-        """
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
-            // Ignore nonsense: a mid-render zero, or a value so large the card
-            // would show nothing at all.
-            guard let self, let edge = result as? Double, edge > 100, edge < 700 else { return }
-            let inset = CGFloat(edge.rounded())
-            guard abs(inset - self.sidebarInset) > 1 else { return }
-            if abs(inset - self.lastMeasuredInset) < 1 {
-                self.stableMeasurements += 1
-                // Two identical readings after the page settled: stop asking.
-                if self.stableMeasurements >= 2 {
-                    self.fixupWork.forEach { $0.cancel() }
-                    self.fixupWork.removeAll()
-                }
-            } else {
-                self.stableMeasurements = 0
-            }
-            self.lastMeasuredInset = inset
-            self.sidebarInset = inset
-            // Layout no longer shifts the web view; chrome is CSS-hidden.
-            if !self.theaterMode { self.pushCardClip() }
-        }
-    }
 
     /// When Messenger's photo theatre opens, expand the card to nearly fill the
     /// display and temporarily unclip the sidebar — theatre centres on the full
@@ -1728,31 +1549,28 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// After we expand for a tap, theatre has not mounted yet — do not restore
     /// the small card until this deadline (or until theatre is seen, then lost).
     private var theaterHoldUntil: CFTimeInterval = 0
-    private var photoOverlay: CardPhotoOverlay?
     private var mediaCenterTimer: Timer?
     private var overlayPromoteWork: [DispatchWorkItem] = []
 
-    private func pushCardClip(_ override: CGFloat? = nil) {
+    /// Encoded once: this runs ~9 times per thread open.
+    private static let cardThreadCSSJSON =
+        ChatBubbleController.jsonString(InjectedScript.cardThreadCSS) ?? "\"\""
+
+    private func pushCardClip() {
         guard webView != nil else { return }
         clearTheaterOptics()
         let active = isExpanded && !showingPicker
             && webView.superview === card.contentView
         sidebarConstraint?.constant = Self.inset
-        _ = override
-        let cssJSON = Self.jsonString(InjectedScript.cardThreadCSS) ?? "\"\""
         let js = """
-        window.__plumeCardActive=\(active ? "true" : "false");
-        window.__plumeCardClip=0;
-        window.__plumeTheaterMode=\(theaterMode ? "true" : "false");
         try {
           document.documentElement.classList.toggle("plume-card-thread", \(active ? "true" : "false"));
         } catch (e) {}
         if (\(active ? "true" : "false")) {
-          window.__plumeSetStyle && window.__plumeSetStyle("\(InjectedScript.StyleID.cardThread)", \(cssJSON));
+          window.__plumeSetStyle && window.__plumeSetStyle("\(InjectedScript.StyleID.cardThread)", \(Self.cardThreadCSSJSON));
         } else {
           window.__plumeRemoveStyle && window.__plumeRemoveStyle("\(InjectedScript.StyleID.cardThread)");
         }
-        window.__plumeClearCardOverlays && window.__plumeClearCardOverlays();
         """
         webView.evaluateJavaScript(js, completionHandler: nil)
         if active {
@@ -1760,7 +1578,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         } else {
             stopOverlayFitTimer()
             exitTheaterMode(restore: false)
-            hidePhotoOverlay()
         }
     }
 
@@ -1773,18 +1590,17 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         CATransaction.commit()
     }
 
-    /// Poll theatre open/close; reinforce overlay-fit only while clipped.
+    /// Poll theatre open/close while a thread is showing in the card.
     private func startOverlayFitTimer() {
         guard mediaCenterTimer == nil else { return }
         let t = Timer(timeInterval: 0.22, repeats: true) { [weak self] _ in
             guard let self, self.isExpanded, !self.showingPicker else { return }
+            // Covered or on another Space: nobody can open a photo in it, and
+            // each detect pass walks every image in the page.
+            guard self.card.occlusionState.contains(.visible) else { return }
             self.pollTheaterMode()
-            if !self.theaterMode {
-                self.webView.evaluateJavaScript(
-                    "window.__plumeFitCardOverlays&&window.__plumeFitCardOverlays()",
-                    completionHandler: nil)
-            }
         }
+        t.tolerance = 0.05
         RunLoop.main.add(t, forMode: .common)
         mediaCenterTimer = t
     }
@@ -1792,12 +1608,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func stopOverlayFitTimer() {
         mediaCenterTimer?.invalidate()
         mediaCenterTimer = nil
-    }
-
-    private func startMediaCenterTimer() { startOverlayFitTimer() }
-    private func stopMediaCenterTimer() { stopOverlayFitTimer() }
-    private func reinforceMediaCenter() {
-        pollTheaterMode()
     }
 
     private func pollTheaterMode() {
@@ -1836,7 +1646,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         // Unclip: give Messenger the full page so theatre centres in the card.
         sidebarConstraint?.constant = Self.inset
-        pushCardClip(0)
+        pushCardClip()
 
         let visible = hostScreen.visibleFrame
         let lane = Chain.peak + 12
@@ -1854,13 +1664,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         card.orderFrontRegardless()
         promoteOverlayStack()
         wake()
-        // Replay is optional; theatre should already open in this viewport.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, self.theaterMode else { return }
-            self.webView.evaluateJavaScript(
-                "window.__plumeReplayArmedImage&&window.__plumeReplayArmedImage()",
-                completionHandler: nil)
-        }
     }
 
     private func exitTheaterMode(restore: Bool) {
@@ -1879,32 +1682,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         preTheaterSize = nil
         sidebarConstraint?.constant = Self.inset
-        pushCardClip(0)
+        pushCardClip()
         if restore, isExpanded, card.isVisible {
             positionCard()
             promoteOverlayStack()
             wake()
         }
-    }
-
-    @objc private func cardMediaChanged(_ note: Notification) {
-        let open = (note.userInfo?["open"] as? Bool) ?? false
-        if open { enterTheaterMode() }
-        else { exitTheaterMode(restore: true) }
-    }
-
-    @objc private func openImageRequested(_ note: Notification) {
-        guard isExpanded, !showingPicker else { return }
-        enterTheaterMode()
-    }
-
-    private func showPhotoOverlay(url: URL) {
-        _ = url
-    }
-
-    private func hidePhotoOverlay() {
-        photoOverlay?.removeFromSuperview()
-        photoOverlay = nil
     }
 
     private func saveCardSize() {
@@ -2312,7 +2095,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         return String(data: data, encoding: .utf8)
     }
 
-    /// Messenger settles asynchronously after a load, so the card's two
+    /// Messenger settles asynchronously after a load, so the card's
     /// adjustments are retried on a short ladder rather than fired once.
     private static let fixupDelays: [TimeInterval] = [0, 0.15, 0.4, 0.9, 1.6, 2.6, 4.0]
     private var fixupWork: [DispatchWorkItem] = []
@@ -2320,10 +2103,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func scheduleCardFixups() {
         fixupWork.forEach { $0.cancel() }
         fixupWork.removeAll()
-        stableMeasurements = 0
         for delay in Self.fixupDelays {
             let work = DispatchWorkItem { [weak self] in
-                self?.measureSidebar()
                 self?.hideSkipLinks()
             }
             fixupWork.append(work)
@@ -2385,13 +2166,20 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     /// Ladder of scroll-to-end attempts: Messenger mounts virtualised rows
-    /// asynchronously after a resize / thread re-click.
+    /// asynchronously after a resize / thread re-click. A new thread replaces
+    /// the old ladder, so quick switching never stacks page-wide scans.
+    private var scrollWork: [DispatchWorkItem] = []
+
     private func scheduleScrollToLatest() {
+        scrollWork.forEach { $0.cancel() }
+        scrollWork.removeAll()
         for delay in [0.05, 0.2, 0.45, 0.9, 1.6, 2.8] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let work = DispatchWorkItem { [weak self] in
                 guard let self, self.isExpanded, !self.showingPicker else { return }
                 self.scrollToLatest()
             }
+            scrollWork.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 
@@ -2400,7 +2188,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func showPicker() {
         currentThread = nil
         showingPicker = true
-        pushCardClip(0)
+        pushCardClip()
         // Size against the chain's display — `card.screen` still names the old
         // one while the card is ordered out or mid-hop between monitors.
         let visible = hostScreen.visibleFrame
@@ -2494,13 +2282,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     func collapse() {
         guard isExpanded else { return }
         collapseWork?.cancel(); collapseWork = nil
-        stopMediaCenterTimer()
+        stopOverlayFitTimer()
         if theaterMode { exitTheaterMode(restore: true) }
         isExpanded = false
         docked = false
         hoverFocus = nil
-        pushCardClip(0)
-        hidePhotoOverlay()
+        pushCardClip()
         tether.hide()
         wake()                              // the chain flies home to its column
         bubbles.forEach { $0.orderFrontRegardless() }
@@ -2571,14 +2358,15 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
         unreadWork?.cancel(); unreadWork = nil
-        stopMediaCenterTimer()
-        hidePhotoOverlay()
+        stopOverlayFitTimer()
         docked = false
         hoverFocus = nil
         tether.hide()
         teardownLoop()
         fixupWork.forEach { $0.cancel() }
         fixupWork.removeAll()
+        scrollWork.forEach { $0.cancel() }
+        scrollWork.removeAll()
         collapseWork?.cancel(); collapseWork = nil
         webView.removeFromSuperview()
         card.orderOut(nil)
@@ -2892,10 +2680,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private var lastFrame: CFTimeInterval = 0      // 0 = sentinel, not a timestamp
     private var idleFrames = 0
     private var mouseMonitors: [Any] = []
-    /// Debounced hop onto the display the cursor is on — matches the user's
-    /// expectation that bubbles follow the active screen, and keeps `centres`
-    /// honest so the card opens there too.
-    private var followScreenWork: DispatchWorkItem?
     /// Polls `mouseLocation` while bubble mode is live. Global mouse monitors
     /// silently drop events across display boundaries on current macOS (and
     /// need Accessibility for some paths); a 30 Hz poll needs neither and is
@@ -2955,7 +2739,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func teardownLoop() {
         link?.invalidate(); link = nil
         linkProxy = nil; linkScreen = nil
-        followScreenWork?.cancel(); followScreenWork = nil
         stopMousePoll()
         mouseMonitors.forEach { NSEvent.removeMonitor($0) }
         mouseMonitors.removeAll()
@@ -2966,6 +2749,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.pollMouse()
         }
+        // Lets the system coalesce this wake-up with others; it runs for as
+        // long as bubble mode is on.
+        t.tolerance = 0.008
         RunLoop.main.add(t, forMode: .common)
         mousePoll = t
     }
@@ -3360,12 +3146,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     /// Cheap enough for every mouse-moved event: it only wakes the loop when the
     /// answer actually changed, so a cursor elsewhere on screen costs nothing.
+    /// Following the cursor to another display is left to `pollMouse`: its
+    /// debounce counts 30 Hz ticks, and feeding it every mouse event too
+    /// shrank the ~160ms wait to a few milliseconds on a fast mouse.
     private func cursorMoved() {
         let before = hoverTargets
         recomputeHoverTargets()
         syncBubbleClickThrough()
         if before != hoverTargets { wake() }
-        followCursorScreenIfNeeded()
     }
 
     /// When the cursor parks on another display, bring the chain — and the
