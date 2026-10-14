@@ -3,6 +3,12 @@
 Instructions for AI coding agents (Codex, Gemini CLI, Cursor, Claude Code, …)
 working in this repository. The human-facing overview is in `README.md`.
 
+**This is the only agent-instruction file.** Don't add `CLAUDE.md`,
+`CLAUDE.local.md`, `GEMINI.md`, `.cursorrules` or `.cursor/rules/` — edit this
+file instead. Codex and Cursor read it natively; Claude Code reads it when no
+`CLAUDE.md`/`CLAUDE.local.md` exists (v2.1.277+), so adding one hides this
+file from Claude; Gemini CLI reads it through `.gemini/settings.json`.
+
 ## Project
 
 A native macOS client for Facebook Messenger: `messenger.com` inside the
