@@ -21,9 +21,46 @@ enum Plume {
         "fbcdn.net",
     ]
 
+    /// A link shim is outbound by definition, even though its host is ours.
     static func isInternal(_ url: URL) -> Bool {
         guard let host = url.host else { return false }
-        return isInternal(host: host)
+        return isInternal(host: host) && !isLinkShim(url)
+    }
+
+    /// Facebook's outbound-link redirector. Links in messages point at
+    /// `l.messenger.com/l.php?u=<target>&h=…`, which then redirects to the
+    /// real site. Judged by its host the shim looked internal, so outbound
+    /// links stayed in the app and a `target=_blank` one was loaded over the
+    /// live Messenger page. Caprine strips the same prefix.
+    private static let linkShimHosts: Set<String> = [
+        "l.messenger.com", "l.facebook.com", "lm.facebook.com",
+    ]
+
+    static func isLinkShim(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return linkShimHosts.contains(host) && url.path == "/l.php"
+    }
+
+    /// The shim's real destination, so the browser opens the site itself
+    /// rather than a tracking redirect. Anything that is not a well-formed
+    /// http(s) target is returned unchanged; the browser can still follow it.
+    static func unwrapLinkShim(_ url: URL) -> URL {
+        guard isLinkShim(url),
+              let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "u" })?.value,
+              let target = URL(string: raw), target.host != nil,
+              let scheme = target.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return url }
+        return target
+    }
+
+    /// Schemes worth handing to `NSWorkspace`. Everything else a page can put
+    /// in a link (`about:`, `javascript:`, `file:`, custom app schemes) is
+    /// dropped rather than launched on the user's behalf.
+    static func isExternallyOpenable(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return ["http", "https", "mailto", "tel"].contains(scheme)
     }
 
     /// Host-based membership test. Accepts the exact host or any subdomain of

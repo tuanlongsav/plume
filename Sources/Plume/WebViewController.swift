@@ -51,10 +51,12 @@ final class WebViewController: NSViewController {
         config.websiteDataStore = .default()
 
         let controller = WKUserContentController()
+        // Main frame only: every helper works on Messenger's own document, and
+        // the bridge refuses messages from sub-frames anyway (ScriptBridge).
         let script = WKUserScript(
             source: InjectedScript.source,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
         )
         controller.addUserScript(script)
         // One bridge handles every channel; the content controller retains it
@@ -386,8 +388,18 @@ final class WebViewController: NSViewController {
         splashView.isHidden = state != .splash
         offlineView.isHidden = state != .offline
         if state == .splash { splashView.startAnimating() } else { splashView.stopAnimating() }
-        webView.setValue(state == .main, forKey: "drawsBackground")
+        if Self.canSetDrawsBackground {
+            webView.setValue(state == .main, forKey: "drawsBackground")
+        }
     }
+
+    /// `drawsBackground` is WebKit SPI with no public setter. KVC on a key
+    /// that has gone away raises NSUnknownKeyException, which here would crash
+    /// at launch; without it the opaque splash/offline overlays still cover
+    /// the first paint.
+    private static let canSetDrawsBackground =
+        WKWebView.instancesRespond(to: Selector(("_setDrawsBackground:")))
+        || WKWebView.instancesRespond(to: Selector(("setDrawsBackground:")))
 
     private func setLoading(_ on: Bool, dimmed: Bool = true) {
         loadingView.isHidden = !on
@@ -471,12 +483,13 @@ extension WebViewController: WKNavigationDelegate {
         // A user clicking an outbound link → hand off to the real browser,
         // EXCEPT attachment-CDN links: allow those through so the response
         // handler can inspect the MIME / Content-Disposition and download them.
+        // Non-web schemes are cancelled, not loaded over the Messenger page.
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
             if Plume.isAttachmentHost(url) {
                 expectingAttachmentNav = true   // suppress the loading pill
                 decisionHandler(.allow); return
             }
-            NSWorkspace.shared.open(url)
+            Self.openExternally(url)
             decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
@@ -620,10 +633,16 @@ extension WebViewController: WKUIDelegate {
             } else if Plume.isInternal(url) {
                 webView.load(navigationAction.request)
             } else {
-                NSWorkspace.shared.open(url)
+                Self.openExternally(url)
             }
         }
         return nil
+    }
+
+    /// Shared with popup windows, which follow the same outbound rules.
+    static func openExternally(_ url: URL) {
+        guard Plume.isExternallyOpenable(url) else { return }
+        NSWorkspace.shared.open(Plume.unwrapLinkShim(url))
     }
 
     // Native file picker for attachments.
@@ -802,7 +821,13 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else { return }
+        // Message handlers are reachable from every frame, so an embedded
+        // third-party frame could otherwise post spoofed native banners or
+        // pop the delete menu. Only our page's own main frame may.
+        let frame = message.frameInfo
+        guard frame.isMainFrame, message.webView === controller?.webView,
+              Plume.isInternal(host: frame.securityOrigin.host),
+              let body = message.body as? [String: Any] else { return }
         switch message.name {
         case "notify":      controller?.handleNotify(body)
         case "notifyClose": controller?.handleNotifyClose(body)

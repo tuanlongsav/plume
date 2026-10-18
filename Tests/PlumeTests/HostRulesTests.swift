@@ -54,4 +54,47 @@ final class HostRulesTests: XCTestCase {
         XCTAssertFalse(Plume.isInternal(host: "cdn.fbsbx.com"))
         XCTAssertFalse(Plume.isCallOrigin(host: "cdn.fbsbx.com"))
     }
+
+    // Regression: links in messages go through the l.php shim, whose host is
+    // internal. It must count as outbound or the target loads in the app.
+    func testLinkShimIsOutbound() {
+        let shim = URL(string: "https://l.messenger.com/l.php?u=https%3A%2F%2Fexample.com%2F&h=AT0")!
+        XCTAssertTrue(Plume.isLinkShim(shim))
+        XCTAssertFalse(Plume.isInternal(shim))
+        XCTAssertFalse(Plume.isInternal(URL(string: "https://l.facebook.com/l.php?u=x")!))
+        XCTAssertFalse(Plume.isInternal(URL(string: "https://lm.facebook.com/l.php?u=x")!))
+
+        // The rest of those hosts, and real Messenger pages, stay internal.
+        XCTAssertTrue(Plume.isInternal(URL(string: "https://l.messenger.com/other")!))
+        XCTAssertTrue(Plume.isInternal(URL(string: "https://www.messenger.com/t/123/")!))
+        XCTAssertFalse(Plume.isLinkShim(URL(string: "https://l.messenger.com.evil.com/l.php?u=x")!))
+    }
+
+    func testUnwrapLinkShim() {
+        let shim = URL(string: "https://l.messenger.com/l.php?u=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2&h=AT0")!
+        XCTAssertEqual(Plume.unwrapLinkShim(shim).absoluteString, "https://example.com/a?b=1&c=2")
+        let fb = URL(string: "https://l.facebook.com/l.php?u=http%3A%2F%2Fexample.org%2F&h=x")!
+        XCTAssertEqual(Plume.unwrapLinkShim(fb).absoluteString, "http://example.org/")
+
+        // Not a shim, or no usable http(s) target: handed back unchanged.
+        for s in ["https://www.messenger.com/t/1/",
+                  "https://l.messenger.com/l.php?h=AT0",
+                  "https://l.messenger.com/l.php?u=javascript%3Aalert(1)",
+                  "https://l.messenger.com/l.php?u=not%20a%20url",
+                  "https://l.messenger.com.evil.com/l.php?u=https%3A%2F%2Fexample.com%2F"] {
+            let url = URL(string: s)!
+            XCTAssertEqual(Plume.unwrapLinkShim(url), url, s)
+        }
+    }
+
+    func testOnlyWebAndContactSchemesOpenExternally() {
+        for s in ["https://example.com/", "http://example.com/",
+                  "mailto:someone@example.com", "tel:+84123456789"] {
+            XCTAssertTrue(Plume.isExternallyOpenable(URL(string: s)!), s)
+        }
+        for s in ["about:blank", "javascript:alert(1)", "file:///etc/hosts",
+                  "x-apple.systempreferences:com.apple.preference.security"] {
+            XCTAssertFalse(Plume.isExternallyOpenable(URL(string: s)!), s)
+        }
+    }
 }
