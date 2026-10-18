@@ -15,6 +15,7 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
   `UNUserNotificationCenter`); clicking a banner reopens that thread
 - Dock unread badge, synced from the page's unread count
 - Outbound links open in your default browser, not inside the app
+- Calls (and any other window Messenger opens) get a real window of their own
 - Native file picker for attachments; camera/mic granted for calls
 - In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
 - Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
@@ -74,21 +75,23 @@ the design changes (the committed `Resources/Plume.icns` is used otherwise).
 | Process entry / `NSApplication` boot | `Sources/Plume/main.swift` |
 | Window, menus, notification routing | `Sources/Plume/AppDelegate.swift` |
 | `WKWebView` config, nav, uploads, badge | `Sources/Plume/WebViewController.swift` |
+| Call / `window.open` windows | `Sources/Plume/PopupWindowController.swift` |
 | Injected JS (notification + badge bridge) | `Sources/Plume/InjectedScript.swift` |
 | URLs, user-agent, internal-host rules | `Sources/Plume/Constants.swift` |
 
-### Why no Rust (yet)
+### Why no Rust
 
 In a WebView wrapper, WebKit owns all networking to Facebook — there is no
 protocol layer to implement, so a Rust "network core" would add build
-weight without any speedup. The place Rust *would* earn its keep is a
-**Phase 2 local proxy** that strips Facebook tracker/ad/telemetry traffic
-to make pages load lighter. That's real performance work and is kept out
-of scope for v1.
+weight without any speedup. Stripping tracker/ad/telemetry traffic does not
+need one either: WebKit's `WKContentRuleList` compiles Safari content-blocker
+rules (JSON) and applies them inside its own network process, by URL and
+resource type. A separate local proxy would only see hostnames in HTTPS
+unless it intercepted TLS, and would be one more process to sign and ship.
 
 ## Roadmap
 
-- [ ] Phase 2: Rust content-filtering proxy (tracker/ad stripping)
-- [ ] Custom dark-mode / compact-density CSS toggles
-- [ ] Per-account profiles (multiple `WKWebsiteDataStore`s)
+- [ ] Tracker/ad blocking with `WKContentRuleList` (Safari content-blocker JSON)
+- [x] Dark-mode / compact-density toggles
+- [ ] Per-account profiles: a persistent `WKWebsiteDataStore(forIdentifier:)` per account
 - [x] App icon + DMG packaging

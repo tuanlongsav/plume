@@ -59,6 +59,7 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |
 | `ChromeToolbar.swift`, `StateOverlays.swift`, `FeatherView.swift` | Native toolbar, loading/offline/splash overlays, logo |
 | `PDFViewerWindowController.swift` | In-app PDF viewer for attachments |
+| `PopupWindowController.swift` | Real windows for `window.open` (calls start on `about:blank`) |
 | `Tests/PlumeTests/` | XCTest; JS that needs no DOM is run in `JavaScriptCore` |
 | `docs/ui-redesign-brief.md` | Design brief (Vietnamese) |
 
