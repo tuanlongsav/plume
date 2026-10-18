@@ -86,7 +86,7 @@ final class ChromeToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
     private func toggleItem(_ id: NSToolbarItem.Identifier, symbol: String,
                             label: String, action: Selector) -> (NSToolbarItem, NSButton) {
         let button = NSButton()
-        button.bezelStyle = .texturedRounded
+        button.bezelStyle = .toolbar
         button.setButtonType(.momentaryPushIn)
         button.isBordered = true
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)

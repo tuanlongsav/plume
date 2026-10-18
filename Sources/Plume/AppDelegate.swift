@@ -62,8 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         controller.load()
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
+
+    /// Opts into secure coding for restored window state; without it macOS 14
+    /// logs a warning at every launch.
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // In bubble mode the main window is intentionally hidden — leave it that
@@ -104,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 completionHandler()
                 return
             }
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             window.makeKeyAndOrderFront(nil)
             controller.activateNotification(id: id)
         }
@@ -215,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // the one failure this whole arrangement must never produce.
         controller.reclaimWebView()
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -271,7 +275,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(deleteConversation):
             return controller.canDeleteCurrentConversation && !ChatBubbleController.isOpen
         case #selector(toggleChrome):
-            item.title = (window.toolbar?.isVisible ?? true) ? "Hide Toolbar" : "Show Toolbar"
+            item.title = (window.toolbar?.isVisible ?? true)
+                ? L.t("Ẩn thanh công cụ", "Hide Toolbar")
+                : L.t("Hiện thanh công cụ", "Show Toolbar")
         default: break
         }
         return true
@@ -285,104 +291,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About Plume", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L.t("Giới thiệu Plume", "About Plume"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Plume", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: L.t("Ẩn Plume", "Hide Plume"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: L.t("Ẩn các ứng dụng khác", "Hide Others"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L.t("Hiện tất cả", "Show All"), action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Plume", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: L.t("Thoát Plume", "Quit Plume"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // Edit menu — gives us cut/copy/paste/select-all/spellcheck for free.
         let editItem = NSMenuItem()
         mainMenu.addItem(editItem)
-        let editMenu = NSMenu(title: "Edit")
+        let editMenu = NSMenu(title: L.t("Sửa", "Edit"))
         editItem.submenu = editMenu
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: L.t("Hoàn tác", "Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: L.t("Làm lại", "Redo"), action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: L.t("Cắt", "Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: L.t("Sao chép", "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: L.t("Dán", "Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: L.t("Chọn tất cả", "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
         // View menu
         let viewItem = NSMenuItem()
         mainMenu.addItem(viewItem)
-        let viewMenu = NSMenu(title: "View")
+        let viewMenu = NSMenu(title: L.t("Xem", "View"))
         viewItem.submenu = viewMenu
-        viewMenu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "r").target = self
-        let back = viewMenu.addItem(withTitle: "Back", action: #selector(goBack), keyEquivalent: "[")
+        viewMenu.addItem(withTitle: L.t("Tải lại", "Reload"), action: #selector(reload), keyEquivalent: "r").target = self
+        let back = viewMenu.addItem(withTitle: L.t("Lùi", "Back"), action: #selector(goBack), keyEquivalent: "[")
         back.target = self
-        let fwd = viewMenu.addItem(withTitle: "Forward", action: #selector(goForward), keyEquivalent: "]")
+        let fwd = viewMenu.addItem(withTitle: L.t("Tiến", "Forward"), action: #selector(goForward), keyEquivalent: "]")
         fwd.target = self
         viewMenu.addItem(.separator())
-        let fullScreen = viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        let fullScreen = viewMenu.addItem(withTitle: L.t("Vào chế độ toàn màn hình", "Enter Full Screen"), action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
 
         // Appearance / theming toggles (mirror the toolbar).
         viewMenu.addItem(.separator())
-        viewMenu.addItem(withTitle: "Dark Mode", action: #selector(toggleDark), keyEquivalent: "d").target = self
-        viewMenu.addItem(withTitle: "Follow System Appearance", action: #selector(followSystem), keyEquivalent: "").target = self
-        let compact = viewMenu.addItem(withTitle: "Compact Density", action: #selector(toggleCompact), keyEquivalent: "d")
+        viewMenu.addItem(withTitle: L.t("Nền tối", "Dark Mode"), action: #selector(toggleDark), keyEquivalent: "d").target = self
+        viewMenu.addItem(withTitle: L.t("Theo giao diện hệ thống", "Follow System Appearance"), action: #selector(followSystem), keyEquivalent: "").target = self
+        let compact = viewMenu.addItem(withTitle: L.t("Hiển thị thu gọn", "Compact Density"), action: #selector(toggleCompact), keyEquivalent: "d")
         compact.keyEquivalentModifierMask = [.command, .shift]
         compact.target = self
-        viewMenu.addItem(withTitle: "Web Styling", action: #selector(toggleWebStyling), keyEquivalent: "").target = self
+        viewMenu.addItem(withTitle: L.t("Tuỳ biến giao diện web", "Web Styling"), action: #selector(toggleWebStyling), keyEquivalent: "").target = self
         viewMenu.addItem(.separator())
-        let hideToolbar = viewMenu.addItem(withTitle: "Hide Toolbar", action: #selector(toggleChrome), keyEquivalent: "t")
+        let hideToolbar = viewMenu.addItem(withTitle: L.t("Ẩn thanh công cụ", "Hide Toolbar"), action: #selector(toggleChrome), keyEquivalent: "t")
         hideToolbar.keyEquivalentModifierMask = [.command, .option]   // macOS convention
         hideToolbar.target = self
 
         // Conversation menu (Caprine port)
         let convItem = NSMenuItem()
         mainMenu.addItem(convItem)
-        let convMenu = NSMenu(title: "Conversation")
+        let convMenu = NSMenu(title: L.t("Đoạn chat", "Conversation"))
         convItem.submenu = convMenu
         for n in 1...9 {
-            let it = convMenu.addItem(withTitle: "Conversation \(n)",
+            let it = convMenu.addItem(withTitle: L.t("Đoạn chat \(n)", "Conversation \(n)"),
                 action: #selector(jumpToConversation(_:)), keyEquivalent: "\(n)")
             it.keyEquivalentModifierMask = [.command]
             it.tag = n
             it.target = self
         }
         convMenu.addItem(.separator())
-        let nextConv = convMenu.addItem(withTitle: "Select Next Conversation",
+        let nextConv = convMenu.addItem(withTitle: L.t("Đoạn chat tiếp theo", "Select Next Conversation"),
             action: #selector(nextConversation), keyEquivalent: "\t")
         nextConv.keyEquivalentModifierMask = [.control]
         nextConv.target = self
-        let prevConv = convMenu.addItem(withTitle: "Select Previous Conversation",
+        let prevConv = convMenu.addItem(withTitle: L.t("Đoạn chat trước", "Select Previous Conversation"),
             action: #selector(prevConversation), keyEquivalent: "\t")
         prevConv.keyEquivalentModifierMask = [.control, .shift]
         prevConv.target = self
-        let unread = convMenu.addItem(withTitle: "Next Unread Conversation",
+        let unread = convMenu.addItem(withTitle: L.t("Đoạn chat chưa đọc tiếp theo", "Next Unread Conversation"),
             action: #selector(nextUnread), keyEquivalent: "u")
         unread.keyEquivalentModifierMask = [.command, .shift]
         unread.target = self
         convMenu.addItem(.separator())
-        convMenu.addItem(withTitle: "Find Conversation…",
+        convMenu.addItem(withTitle: L.t("Tìm đoạn chat…", "Find Conversation…"),
             action: #selector(findConversation), keyEquivalent: "k").target = self
         convMenu.addItem(.separator())
         // ⇧⌘⌫, not ⌘⌫: a menu shortcut wins over the composer, where ⌘⌫ is
         // "delete to start of line".
-        let deleteConv = convMenu.addItem(withTitle: "Delete Conversation…",
+        let deleteConv = convMenu.addItem(withTitle: L.t("Xoá đoạn chat…", "Delete Conversation…"),
             action: #selector(deleteConversation), keyEquivalent: "\u{8}")
         deleteConv.keyEquivalentModifierMask = [.command, .shift]
         deleteConv.target = self
         convMenu.addItem(.separator())
-        convMenu.addItem(withTitle: "Enable Conversation Shortcuts",
+        convMenu.addItem(withTitle: L.t("Bật phím tắt đoạn chat", "Enable Conversation Shortcuts"),
             action: #selector(toggleShortcuts), keyEquivalent: "").target = self
 
         // Window menu
         let windowItem = NSMenuItem()
         mainMenu.addItem(windowItem)
-        let windowMenu = NSMenu(title: "Window")
+        let windowMenu = NSMenu(title: L.t("Cửa sổ", "Window"))
         windowItem.submenu = windowMenu
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: L.t("Thu nhỏ", "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: L.t("Thu phóng", "Zoom"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
-        let bubbleItem = windowMenu.addItem(withTitle: "Chat Bubble",
+        let bubbleItem = windowMenu.addItem(withTitle: L.t("Bong bóng", "Chat Bubble"),
                                             action: #selector(toggleChatBubble), keyEquivalent: "b")
         bubbleItem.keyEquivalentModifierMask = [.command, .option]
         bubbleItem.target = self
@@ -412,7 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         stayIt.tag = 0
         stayIt.target = self
         displayItem.submenu = displayMenu
-        windowMenu.addItem(withTitle: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
+        windowMenu.addItem(withTitle: L.t("Luôn ở trên cùng", "Always on Top"), action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu

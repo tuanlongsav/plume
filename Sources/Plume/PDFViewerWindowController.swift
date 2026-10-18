@@ -61,14 +61,14 @@ final class PDFViewerWindowController: NSWindowController {
             $0.fileURL.standardizedFileURL == url.standardizedFileURL
         }) {
             existing.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             return existing
         }
 
         let controller = PDFViewerWindowController(fileURL: url)
         registry.append(controller)
         controller.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         return controller
     }
 
@@ -151,7 +151,7 @@ final class PDFViewerWindowController: NSWindowController {
         let toolbar = NSToolbar(identifier: "PDFViewerToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
-        if #available(macOS 11.0, *) { window.toolbarStyle = .unified }
+        window.toolbarStyle = .unified
         window.toolbar = toolbar
 
         // --- Find bar (hidden until Cmd+F) ----------------------------------
@@ -200,8 +200,8 @@ final class PDFViewerWindowController: NSWindowController {
                             target: self, action: #selector(findNext))
         let done = NSButton(title: L.t("Xong", "Done"),
                             target: self, action: #selector(hideFindBar))
-        for b in [prev, next] { b.bezelStyle = .rounded; b.setButtonType(.momentaryPushIn) }
-        done.bezelStyle = .rounded
+        for b in [prev, next] { b.bezelStyle = .push; b.setButtonType(.momentaryPushIn) }
+        done.bezelStyle = .push
 
         findBar.addArrangedSubview(searchField)
         findBar.addArrangedSubview(prev)
@@ -237,7 +237,7 @@ final class PDFViewerWindowController: NSWindowController {
 
         let reveal = NSButton(title: L.t("Hiện trong Finder", "Reveal in Finder"),
                               target: self, action: #selector(revealInFinder))
-        reveal.bezelStyle = .rounded
+        reveal.bezelStyle = .push
         reveal.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(label)
@@ -257,11 +257,7 @@ final class PDFViewerWindowController: NSWindowController {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = fileURL.lastPathComponent
-        if #available(macOS 11.0, *) {
-            panel.allowedContentTypes = [.pdf]
-        } else {
-            panel.allowedFileTypes = ["pdf"]
-        }
+        panel.allowedContentTypes = [.pdf]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, let dest = panel.url else { return }
             do {

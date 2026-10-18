@@ -154,11 +154,11 @@ struct BubbleConversation {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             href = try c.decode(String.self, forKey: .href)
-            name = (try? c.decodeIfPresent(String.self, forKey: .name)) as? String ?? ""
-            avatar = (try? c.decodeIfPresent(String.self, forKey: .avatar)) as? String ?? ""
-            unread = (try? c.decodeIfPresent(Bool.self, forKey: .unread)) as? Bool ?? false
-            preview = (try? c.decodeIfPresent(String.self, forKey: .preview)) as? String ?? ""
-            time = (try? c.decodeIfPresent(String.self, forKey: .time)) as? String ?? ""
+            name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            avatar = (try? c.decodeIfPresent(String.self, forKey: .avatar)) ?? ""
+            unread = (try? c.decodeIfPresent(Bool.self, forKey: .unread)) ?? false
+            preview = (try? c.decodeIfPresent(String.self, forKey: .preview)) ?? ""
+            time = (try? c.decodeIfPresent(String.self, forKey: .time)) ?? ""
         }
 
         enum CodingKeys: String, CodingKey {

@@ -55,21 +55,18 @@ extension NSView {
     /// view's effective appearance. CGColors captured outside this block use
     /// whatever appearance happened to be current.
     func withEffectiveAppearance(_ body: () -> Void) {
-        if #available(macOS 11.0, *) {
-            effectiveAppearance.performAsCurrentDrawingAppearance(body)
-        } else {
-            let saved = NSAppearance.current
-            NSAppearance.current = effectiveAppearance
-            body()
-            NSAppearance.current = saved
-        }
+        effectiveAppearance.performAsCurrentDrawingAppearance(body)
     }
 }
 
 /// Tiny vi/en string picker — Plume's UI copy is bilingual per the handoff.
 enum L {
+    /// The user's first preferred language, which is what System Settings
+    /// (including a per-app language) sets. Plume ships no `.lproj` folders,
+    /// so `Locale.current` has no app localization to report.
     static var isVI: Bool {
-        Locale.current.language.languageCode?.identifier == "vi"
+        let preferred = Locale.preferredLanguages.first.map(Locale.init(identifier:)) ?? .current
+        return preferred.language.languageCode?.identifier == "vi"
     }
     static func t(_ vi: String, _ en: String) -> String { isVI ? vi : en }
 }

@@ -190,7 +190,7 @@ final class GradientButton: NSButton {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         isBordered = false
-        bezelStyle = .regularSquare
+        bezelStyle = .flexiblePush
         attributedTitle = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: 14, weight: .bold),
             .foregroundColor: NSColor.white,
