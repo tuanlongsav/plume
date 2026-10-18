@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    # macos-15, not macos-14: swift-tools-version 6.0 needs Xcode 16, and
+    # `.canJoinAllApplications` (PlumeOverlay) only exists in the macOS 15 SDK.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Release build
+        run: bash Scripts/build_app.sh release
+
+      - name: Package app
+        run: ditto -c -k --keepParent build/Plume.app build/Plume.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Plume-${{ github.sha }}
+          path: build/Plume.zip
+          retention-days: 7

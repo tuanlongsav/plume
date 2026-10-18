@@ -51,6 +51,10 @@ bash Scripts/make_dmg.sh release       # → build/Plume.dmg (drag-to-install)
 bash Scripts/make_icon.sh              # regenerate Resources/Plume.icns
 ```
 
+CI runs `swift test` and a release build on a macOS runner for every push and
+pull request ([`ci.yml`](.github/workflows/ci.yml)); each run keeps the zipped
+`Plume.app` as an artifact.
+
 Requires Xcode command-line tools (Swift 6). `build_app.sh` compiles with
 SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
 ad-hoc signs it (needed for notifications and camera/mic TCC prompts).

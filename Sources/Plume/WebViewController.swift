@@ -76,6 +76,11 @@ final class WebViewController: NSViewController {
         wv.customUserAgent = Plume.userAgent
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
+        #if DEBUG
+        // Safari ▸ Develop can attach to the page, so injected JS is debugged
+        // in a real inspector instead of through PlumeTrace lines.
+        wv.isInspectable = true
+        #endif
         wv.navigationDelegate = self
         wv.uiDelegate = self
         // drawsBackground is set by setContentState(.splash) below (false until

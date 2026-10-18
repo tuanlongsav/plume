@@ -36,8 +36,13 @@ dependencies.
 Environment knobs: `PLUME_UNIVERSAL=1` (arm64 + x86_64), `PLUME_SIGN_IDENTITY`
 (Developer ID instead of ad-hoc), `PLUME_INSTALL_DIR` (default `/Applications`).
 
-There is no CI. Before calling a change done, run `swift test` and a release
-build. Scripts must stay compatible with the bash 3.2 that ships with macOS.
+CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test` and
+`bash Scripts/build_app.sh release` on every push and pull request, and keeps
+the zipped `.app` as a run artifact. It is a backstop, not a substitute: before
+calling a change done, run `swift test` and a release build locally. From a
+non-macOS machine, push and read the CI result instead of claiming it builds.
+Debug builds set `WKWebView.isInspectable`, so Safari ▸ Develop can attach to
+the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 
 ## Layout
 
