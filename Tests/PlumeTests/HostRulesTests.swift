@@ -87,6 +87,20 @@ final class HostRulesTests: XCTestCase {
         }
     }
 
+    // Messenger opens its call window on about:blank and navigates it after;
+    // a nil from createWebViewWith made window.open return null.
+    func testPopupRules() {
+        XCTAssertTrue(Plume.opensInPopup(nil))
+        XCTAssertTrue(Plume.opensInPopup(URL(string: "about:blank")!))
+        XCTAssertTrue(Plume.opensInPopup(URL(string: "https://www.messenger.com/groupcall/ROOM:1/?call_id=2")!))
+        XCTAssertTrue(Plume.opensInPopup(URL(string: "https://www.facebook.com/videocall/incall/")!))
+
+        XCTAssertFalse(Plume.opensInPopup(URL(string: "https://cdn.fbsbx.com/v/doc.pdf")!))
+        XCTAssertFalse(Plume.opensInPopup(URL(string: "https://example.com/")!))
+        XCTAssertFalse(Plume.opensInPopup(URL(string: "https://messenger.com.evil.com/")!))
+        XCTAssertFalse(Plume.opensInPopup(URL(string: "https://l.messenger.com/l.php?u=https%3A%2F%2Fexample.com%2F")!))
+    }
+
     func testOnlyWebAndContactSchemesOpenExternally() {
         for s in ["https://example.com/", "http://example.com/",
                   "mailto:someone@example.com", "tel:+84123456789"] {

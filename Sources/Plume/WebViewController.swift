@@ -618,24 +618,27 @@ extension WebViewController: WKNavigationDelegate {
 // MARK: - UI delegate (popups, file pickers, media permission)
 
 extension WebViewController: WKUIDelegate {
-    // target=_blank / window.open → open externally instead of a popup.
+    // target=_blank / window.open: attachments download, our own pages (and
+    // the blank page a call window starts on) get a real window, the rest of
+    // the web goes to the browser. Never into this web view: that replaced
+    // the live inbox, and `window.open` returning null broke calls.
     func webView(_ webView: WKWebView,
                  createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url {
-            if Plume.isAttachmentHost(url) {
-                // Attachment-CDN URLs load in the main frame so the response
-                // handler converts them to a download (without replacing the
-                // current document); suppress the loading pill for them.
-                expectingAttachmentNav = true
-                webView.load(navigationAction.request)
-            } else if Plume.isInternal(url) {
-                webView.load(navigationAction.request)
-            } else {
-                Self.openExternally(url)
-            }
+        let url = navigationAction.request.url
+        if let url, Plume.isAttachmentHost(url) {
+            // Attachment-CDN URLs load in the main frame so the response
+            // handler converts them to a download (without replacing the
+            // current document); suppress the loading pill for them.
+            expectingAttachmentNav = true
+            webView.load(navigationAction.request)
+            return nil
         }
+        if Plume.opensInPopup(url) {
+            return PopupWindowController.open(configuration: configuration, features: windowFeatures)
+        }
+        if let url { Self.openExternally(url) }
         return nil
     }
 

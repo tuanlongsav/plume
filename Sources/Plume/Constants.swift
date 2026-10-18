@@ -55,6 +55,15 @@ enum Plume {
         return target
     }
 
+    /// What a `window.open` / `target=_blank` request gets a real window for:
+    /// our own pages, and the blank page Messenger opens a call window on
+    /// before navigating it. Attachments and the rest of the web do not.
+    static func opensInPopup(_ url: URL?) -> Bool {
+        guard let url else { return true }
+        if url.scheme?.lowercased() == "about" { return true }
+        return isInternal(url)
+    }
+
     /// Schemes worth handing to `NSWorkspace`. Everything else a page can put
     /// in a link (`about:`, `javascript:`, `file:`, custom app schemes) is
     /// dropped rather than launched on the user's behalf.
