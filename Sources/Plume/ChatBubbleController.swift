@@ -398,6 +398,20 @@ enum Chain {
     static let projectTauY: CGFloat = 0.06
     static let dragSlop: CGFloat = 3
 
+    /// Release velocity: a regression over a trailing time window. An EMA
+    /// with a fixed coefficient over uneven dt would make flick strength
+    /// depend on whether the user is on a 125Hz mouse or a 90Hz trackpad.
+    static func flickVelocity(_ samples: [(p: NSPoint, t: CFTimeInterval)],
+                              now: CFTimeInterval = CACurrentMediaTime()) -> NSPoint {
+        guard let last = samples.last, now - last.t <= velStaleGate else { return .zero }
+        let window = samples.filter { last.t - $0.t <= velWindow }
+        guard let first = window.first, window.count >= 2 else { return .zero }
+        let span = last.t - first.t
+        guard span >= velMinSpan else { return .zero }
+        return NSPoint(x: (last.p.x - first.p.x) / CGFloat(span),
+                       y: (last.p.y - first.p.y) / CGFloat(span))
+    }
+
     /// Constant visual edge gap while packing (rest and magnified).
     static var magGap: CGFloat { step - base }
     /// Centre-to-centre between two live diameters (Dock packing).
@@ -723,7 +737,7 @@ final class BubbleChipView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         pressed = false
-        if didDrag { onDragEnded?(flickVelocity()); return }
+        if didDrag { onDragEnded?(Chain.flickVelocity(samples)); return }
         if event.clickCount >= 2, onDoubleClick != nil { onDoubleClick?() }
         else { onClick?(conversation) }
     }
@@ -738,20 +752,6 @@ final class BubbleChipView: NSView {
         // bubbles). Ignore the view path so we don't double-present.
     }
     override func menu(for event: NSEvent) -> NSMenu? { nil }   // we drive it ourselves
-
-    /// Regression over a trailing time window. An EMA with a fixed coefficient
-    /// over uneven dt would make flick strength depend on whether the user is
-    /// on a 125Hz mouse or a 90Hz trackpad.
-    private func flickVelocity() -> NSPoint {
-        let now = CACurrentMediaTime()
-        guard let last = samples.last, now - last.t <= Chain.velStaleGate else { return .zero }
-        let window = samples.filter { last.t - $0.t <= Chain.velWindow }
-        guard let first = window.first, window.count >= 2 else { return .zero }
-        let span = last.t - first.t
-        guard span >= Chain.velMinSpan else { return .zero }
-        return NSPoint(x: (last.p.x - first.p.x) / CGFloat(span),
-                       y: (last.p.y - first.p.y) / CGFloat(span))
-    }
 }
 
 /// One row of the app chip's list, built to the same metrics Messenger uses in
@@ -1558,7 +1558,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     /// Encoded once: this runs ~9 times per thread open.
     private static let cardThreadCSSJSON =
-        ChatBubbleController.jsonString(InjectedScript.cardThreadCSS) ?? "\"\""
+        InjectedScript.stringLiteral(InjectedScript.cardThreadCSS) ?? "\"\""
 
     private func pushCardClip() {
         guard webView != nil else { return }
@@ -2095,12 +2095,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Escape a Swift string for safe interpolation into evaluated JavaScript.
-    private static func jsonString(_ s: String) -> String? {
-        guard let data = try? JSONEncoder().encode(s) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
     /// Messenger settles asynchronously after a load, so the card's
     /// adjustments are retried on a short ladder rather than fired once.
     private static let fixupDelays: [TimeInterval] = [0, 0.15, 0.4, 0.9, 1.6, 2.6, 4.0]
@@ -2122,9 +2116,11 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// the conversation in a card this narrow.
     /// Fired only in the moment after a thread switch, so it can never fight a
     /// reader who has deliberately scrolled back through the conversation.
-    private func scrollToLatest() {
-        webView.evaluateJavaScript("window.__plumeScrollToLatest && window.__plumeScrollToLatest()",
-                                   completionHandler: nil)
+    /// `settled` reports that the thread was already at its newest message.
+    private func scrollToLatest(_ done: @escaping (_ settled: Bool) -> Void) {
+        webView.evaluateJavaScript("window.__plumeScrollToLatest && window.__plumeScrollToLatest()") {
+            result, _ in done((result as? String) == "settled")
+        }
     }
 
     private func hideSkipLinks() {
@@ -2138,50 +2134,76 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         applyThreadSize()
         if card.isVisible { keepCardOnScreen() }
         installContent(webView)
-        scheduleCardFixups()
 
         let alreadyOpen = ThreadURL.id(from: webView.url) == ThreadURL.id(from: url)
         // Patch helpers onto the live page first — user scripts only run at
         // document start, so an already-open Messenger session would keep the
         // old "same URL ⇒ no-op" behaviour otherwise.
-        // Click the inbox row *before* hiding it: CSS-hiding navigation first
-        // made `__plumeOpenThread` miss the link and fall through to a full
-        // reload, which emptied the recents DOM and wiped the bubble chain.
-        webView.evaluateJavaScript(InjectedScript.threadRefreshHelpers) { [weak self] _, _ in
-            guard let self else { return }
-            self.openThreadInPage(url, force: alreadyOpen)
-            self.pushCardClip()
+        // Click the inbox row *before* the card stylesheet hides it again, so
+        // the fixups that re-apply it start only once the click is done:
+        // CSS-hiding navigation first made `__plumeOpenThread` miss the link
+        // and fall through to a full reload, which emptied the recents DOM
+        // and wiped the bubble chain.
+        webView.evaluateJavaScript(InjectedScript.threadHelpersJS) { [weak self] _, _ in
+            self?.openThreadInPage(url, force: alreadyOpen)
         }
     }
 
     private func openThreadInPage(_ url: URL, force: Bool) {
-        if let live = webView.url, Plume.isInternal(live),
-           let hrefJSON = Self.jsonString(url.absoluteString) {
-            webView.evaluateJavaScript("window.__plumeOpenThread(\(hrefJSON), \(force ? "true" : "false"))") {
-                [weak self] _, _ in
-                // Never `load()` a thread URL on top of a live Messenger
-                // session: a document reload tears down the inbox and the
-                // next recents snapshot deletes every contact bubble.
-                self?.scheduleScrollToLatest()
-            }
-        } else {
+        guard let live = webView.url, Plume.isInternal(live) else {
             webView.load(URLRequest(url: url))
-            scheduleScrollToLatest()
+            settleCard()
+            return
         }
+        webView.callAsyncJavaScript("return await window.__plumeOpenThreadRetry(href, force);",
+                                    arguments: ["href": url.absoluteString, "force": force],
+                                    in: nil, in: .page) { [weak self] result in
+            guard let self else { return }
+            // Never `load()` a thread URL on top of a live Messenger
+            // session: a document reload tears down the inbox and the
+            // next recents snapshot deletes every contact bubble. If the
+            // row could not be clicked, at least point the card at the head
+            // of the thread it still shows.
+            if (try? result.get()) as? Bool == false {
+                PlumeTrace.log("  openThread: no row to click")
+                let shown = ThreadURL.id(from: self.webView.url)
+                if let i = self.bubbles.firstIndex(where: { self.conversation(of: $0)?.id == shown }) {
+                    self.lastOpenedIndex = i
+                    self.wake()
+                }
+            }
+            self.settleCard()
+        }
+    }
+
+    /// After a thread switch: re-hide the inbox, then let Messenger settle.
+    private func settleCard() {
+        pushCardClip()
+        scheduleCardFixups()
+        scheduleScrollToLatest()
     }
 
     /// Ladder of scroll-to-end attempts: Messenger mounts virtualised rows
     /// asynchronously after a resize / thread re-click. A new thread replaces
-    /// the old ladder, so quick switching never stacks page-wide scans.
+    /// the old ladder, so quick switching never stacks page-wide scans, and a
+    /// thread already resting on its newest message ends the ladder early.
     private var scrollWork: [DispatchWorkItem] = []
+    private var scrollLadder = 0
 
     private func scheduleScrollToLatest() {
         scrollWork.forEach { $0.cancel() }
         scrollWork.removeAll()
+        scrollLadder += 1
+        let ladder = scrollLadder
+        var settled = 0
         for delay in [0.05, 0.2, 0.45, 0.9, 1.6, 2.8] {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.isExpanded, !self.showingPicker else { return }
-                self.scrollToLatest()
+                self.scrollToLatest { [weak self] atEnd in
+                    guard let self, self.scrollLadder == ladder else { return }
+                    settled = atEnd ? settled + 1 : 0
+                    if settled >= 2 { self.scrollWork.forEach { $0.cancel() } }
+                }
             }
             scrollWork.append(work)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -2773,7 +2795,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // Button released on another display never reaches the chip view.
             if NSEvent.pressedMouseButtons & 1 == 0 {
                 PlumeTrace.log("  drag mouseUp@\(PlumeTrace.p(p)) via poll")
-                endDrag(velocity: dragFlickVelocity())
+                endDrag(velocity: Chain.flickVelocity(dragSamples))
             } else {
                 dragTo(p)
             }
@@ -3140,7 +3162,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // Idempotent with the chip's own mouseUp: whichever arrives first wins.
             if dragging {
                 PlumeTrace.log("  drag mouseUp@\(PlumeTrace.p(NSEvent.mouseLocation)) via monitor")
-                endDrag(velocity: dragFlickVelocity())
+                endDrag(velocity: Chain.flickVelocity(dragSamples))
             }
         case .leftMouseDragged:
             if dragging { dragTo(NSEvent.mouseLocation) }
@@ -3389,17 +3411,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         dragSamples.append((cursor, now))
         if dragSamples.count > Chain.velSamples { dragSamples.removeFirst() }
         wake()
-    }
-
-    private func dragFlickVelocity() -> NSPoint {
-        let now = CACurrentMediaTime()
-        guard let last = dragSamples.last, now - last.t <= Chain.velStaleGate else { return .zero }
-        let window = dragSamples.filter { last.t - $0.t <= Chain.velWindow }
-        guard let first = window.first, window.count >= 2 else { return .zero }
-        let span = last.t - first.t
-        guard span >= Chain.velMinSpan else { return .zero }
-        return NSPoint(x: (last.p.x - first.p.x) / CGFloat(span),
-                       y: (last.p.y - first.p.y) / CGFloat(span))
     }
 
     /// Release: the flick is loaded straight into the anchor spring, which lands

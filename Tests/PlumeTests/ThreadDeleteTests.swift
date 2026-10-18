@@ -13,7 +13,7 @@ final class ThreadDeleteTests: XCTestCase {
     }
 
     private func match(_ fn: String, _ label: String) -> Bool {
-        let json = String(data: try! JSONEncoder().encode(label), encoding: .utf8)!
+        let json = InjectedScript.stringLiteral(label)!
         return ctx.evaluateScript("__plumeDeleteMatch.\(fn)(\(json))")?.toBool() ?? false
     }
 
@@ -79,5 +79,15 @@ final class ThreadDeleteTests: XCTestCase {
     func testDeleteScriptParses() {
         ctx.evaluateScript("var f = async function (href) {\n\(InjectedScript.deleteThreadJS)\n};")
         XCTAssertNil(ctx.exception, ctx.exception?.toString() ?? "")
+    }
+
+    // The thread helpers are spliced into the document-start script and also
+    // evaluated on their own; a syntax slip in either breaks every card open.
+    func testInjectedScriptsParse() {
+        for js in [InjectedScript.source, InjectedScript.threadHelpersJS] {
+            ctx.evaluateScript("new Function(\(InjectedScript.stringLiteral(js)!));")
+            XCTAssertNil(ctx.exception, ctx.exception?.toString() ?? "")
+        }
+        XCTAssertTrue(InjectedScript.source.contains(InjectedScript.threadHelpersJS))
     }
 }

@@ -425,16 +425,13 @@ final class WebViewController: NSViewController {
         }
     }
     private func setWebStyle(_ id: String, _ css: String) {
-        guard let idJSON = jsonString(id), let cssJSON = jsonString(css) else { return }
+        guard let idJSON = InjectedScript.stringLiteral(id),
+              let cssJSON = InjectedScript.stringLiteral(css) else { return }
         webView.evaluateJavaScript("window.__plumeSetStyle(\(idJSON), \(cssJSON))", completionHandler: nil)
     }
     private func removeWebStyle(_ id: String) {
-        guard let idJSON = jsonString(id) else { return }
+        guard let idJSON = InjectedScript.stringLiteral(id) else { return }
         webView.evaluateJavaScript("window.__plumeRemoveStyle(\(idJSON))", completionHandler: nil)
-    }
-    private func jsonString(_ s: String) -> String? {
-        guard let data = try? JSONEncoder().encode(s) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }
 
