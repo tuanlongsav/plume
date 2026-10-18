@@ -31,4 +31,11 @@ enum ThreadURL {
         }
         return nil
     }
+
+    /// The conversation id alone — the same thread can be listed under `/t/`
+    /// in one place and `/e2ee/t/` in another, so compare threads by this,
+    /// never by URL.
+    static func id(from url: URL?) -> String? {
+        canonical(from: url)?.pathComponents.last { $0 != "/" }
+    }
 }

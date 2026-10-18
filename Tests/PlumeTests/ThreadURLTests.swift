@@ -12,6 +12,16 @@ final class ThreadURLTests: XCTestCase {
                        URL(string: "https://www.messenger.com/marketplace/t/5/"))
     }
 
+    // Bubble heads, unread flags and "same bubble twice" compare by this: a
+    // chat listed under /t/ is often open under /e2ee/t/.
+    func testIdIsSharedAcrossNamespaces() {
+        let ids = ["https://www.messenger.com/t/77/",
+                   "https://www.messenger.com/e2ee/t/77",
+                   "https://www.messenger.com/marketplace/t/77/?x=1"]
+            .map { ThreadURL.id(from: URL(string: $0)) }
+        XCTAssertEqual(ids, ["77", "77", "77"])
+    }
+
     func testStripsTrackingQueryAndTrailingSegments() {
         XCTAssertEqual(ThreadURL.canonical(from: URL(string: "https://www.messenger.com/t/42/?entrypoint=x")!),
                        URL(string: "https://www.messenger.com/t/42/"))

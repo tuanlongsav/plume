@@ -127,6 +127,10 @@ struct BubbleConversation {
     let preview: String
     let time: String
 
+    /// Compare conversations by this, not by `url`: the same thread can be
+    /// listed under `/t/` and open under `/e2ee/t/`.
+    var id: String { ThreadURL.id(from: url) ?? url.absoluteString }
+
     /// Shown until (or instead of) the avatar image loads.
     var initials: String {
         let parts = name.split(separator: " ").prefix(2)
@@ -1156,8 +1160,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private var bubbles: [BubblePanel] = []
     private var webView: WKWebView!
     private var isExpanded = false
-    private var currentThread: URL?
     private var showingPicker = false
+    /// Heads the user opened from the picker. They stay in the chain even
+    /// when the thread is older than the recents window (`BubbleChainSync`).
+    private var pinnedIDs: Set<String> = []
     /// Index of the bubble the card belongs to, for the fold-away animation.
     private var lastOpenedIndex = 0
     private var collapseWork: DispatchWorkItem?
@@ -1288,7 +1294,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// coordinates no screen covers any more, with the loop parked and nothing
     /// to restart it — so pull it back and wake up.
     @objc private func screensChanged() {
-        guard !bubbles.isEmpty else { return }
+        // Mid-reconfiguration the list can be briefly empty; the notification
+        // fires again once a display is back.
+        guard !bubbles.isEmpty, !NSScreen.screens.isEmpty else { return }
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
         if card.isVisible { keepCardOnScreen() }
         promoteOverlayStack()
@@ -1335,10 +1343,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             guard BubbleChainSync.shouldApplySnapshot(
                 count: convos.count, contactHeads: contacts, inboxHidden: inboxHidden)
             else { return }
-            let unread = Set(convos.filter(\.unread).map(\.url))
+            let unread = Set(convos.filter(\.unread).map(\.id))
             for panel in self.bubbles {
                 guard let chip = self.chip(panel), let convo = chip.conversation else { continue }
-                chip.setBadge(unread.contains(convo.url) ? "" : nil)
+                chip.setBadge(unread.contains(convo.id) ? "" : nil)
             }
             self.syncChainToRecents(convos)
         }
@@ -1348,8 +1356,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         (panel.contentView as? BubbleChipView)?.conversation
     }
 
-    /// Match the contact chain to Messenger's newest-first list. Index 0 (app
-    /// chip) never moves. Skipped mid-drag so the gesture keeps its grab.
+    /// Match the contact chain to Messenger's newest-first list, keeping the
+    /// heads the user opened from the picker. Index 0 (app chip) never moves.
+    /// Skipped mid-drag so the gesture keeps its grab.
     private func syncChainToRecents(_ convos: [BubbleConversation]) {
         guard !dragging, !bubbles.isEmpty else { return }
         let contacts = max(0, bubbles.count - 1)
@@ -1357,29 +1366,29 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         guard BubbleChainSync.shouldApplySnapshot(
             count: convos.count, contactHeads: contacts, inboxHidden: inboxHidden)
         else { return }
-        let want = Array(convos.prefix(Preferences.bubbleLimit))
-        let wantURLs = want.map(\.url)
+        let recents = convos.map(\.id)
+        var byID: [String: BubbleConversation] = [:]
+        for convo in convos where byID[convo.id] == nil { byID[convo.id] = convo }
+        let desired = BubbleChainSync.merge(
+            current: bubbles.dropFirst().compactMap { conversation(of: $0)?.id },
+            recents: recents, pinned: pinnedIDs, limit: Preferences.bubbleLimit)
+        // A picked thread that has become recent is an ordinary head again.
+        pinnedIDs.subtract(BubbleChainSync.recentWindow(recents, limit: Preferences.bubbleLimit))
 
-        // Drop contact heads that fell out of the recent window.
+        // Drop contact heads the snapshot no longer wants.
         for i in stride(from: bubbles.count - 1, through: 1, by: -1) {
-            guard let u = conversation(of: bubbles[i])?.url else { continue }
-            if !wantURLs.contains(u) {
-                adjustIndicesAfterRemoval(i)
-                removeBubble(at: i)
-            }
+            guard let id = conversation(of: bubbles[i])?.id, !desired.contains(id) else { continue }
+            adjustIndicesAfterRemoval(i)
+            removeBubble(at: i)
         }
 
-        // Ensure each recent exists, then move it to its rank (1 = newest).
-        for (rank, convo) in want.enumerated() {
+        // Ensure each wanted head exists at its rank (1 = newest). Everything
+        // left is in `desired`, so the chain is already within the limit.
+        for (rank, id) in desired.enumerated() {
             let target = rank + 1
-            if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }) {
+            if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.id == id }) {
                 if existing != target { moveBubble(from: existing, to: target) }
-            } else {
-                while bubbles.count - 1 >= Preferences.bubbleLimit, bubbles.count > 1 {
-                    let last = bubbles.count - 1
-                    adjustIndicesAfterRemoval(last)
-                    removeBubble(at: last)
-                }
+            } else if let convo = byID[id] {
                 let insertAt = min(target, bubbles.count)
                 let centre = centres.indices.contains(min(insertAt, max(0, centres.count - 1)))
                     ? centres[min(insertAt, centres.count - 1)]
@@ -1389,14 +1398,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                 if lastOpenedIndex >= insertAt { lastOpenedIndex += 1 }
                 if let focus = hoverFocus, focus >= insertAt { hoverFocus = focus + 1 }
             }
-        }
-
-        // Final pass: order must match `want` exactly.
-        for (rank, convo) in want.enumerated() {
-            let target = rank + 1
-            guard let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }),
-                  existing != target else { continue }
-            moveBubble(from: existing, to: target)
         }
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
         wake()
@@ -1447,7 +1448,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// tapping a chat on Android spawns a bubble. The oldest contact head falls
     /// off once the chain hits the user's limit.
     private func spawnBubble(for convo: BubbleConversation) {
-        if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }) {
+        pinnedIDs.insert(convo.id)
+        if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.id == convo.id }) {
             // Already open as a head — promote to newest slot.
             if existing != 1 { moveBubble(from: existing, to: 1) }
             return
@@ -1461,6 +1463,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         appendBubble(convo, centre: centre, at: 1)
         if anchorIndex >= 1 { anchorIndex += 1 }
         if lastOpenedIndex >= 1 { lastOpenedIndex += 1 }
+        if let focus = hoverFocus, focus >= 1 { hoverFocus = focus + 1 }
         // One more head means one more `step` of room the chain needs; without
         // this the tail is pinned at the screen edge and never reaches rest.
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
@@ -1469,6 +1472,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func removeBubble(at i: Int) {
         guard bubbles.indices.contains(i) else { return }
+        if let id = conversation(of: bubbles[i])?.id { pinnedIDs.remove(id) }
         retire(bubbles.remove(at: i))
         centres.remove(at: i)
         velocities.remove(at: i)
@@ -1888,6 +1892,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// last. Called from both menus that offer the setting.
     func applyBubbleLimit() {
         while bubbles.count - 1 > Preferences.bubbleLimit, bubbles.count > 1 {
+            // Like every other removal: the card, tether and hover focus must
+            // not stay attached to a head that is gone.
+            adjustIndicesAfterRemoval(bubbles.count - 1)
             removeBubble(at: bubbles.count - 1)
         }
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
@@ -1918,22 +1925,22 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // Same bubble twice = close it again. With the traffic lights hidden
         // this is the card's dismiss affordance.
         // Compare with what the card is ACTUALLY showing: a swipe-back or a
-        // link inside the card leaves `currentThread` behind, and then clicking
-        // that head folds the card away instead of returning to it.
-        let live = ThreadURL.canonical(from: webView.url)
+        // link inside the card leaves the last-opened thread behind, and then
+        // clicking that head folds the card away instead of returning to it.
+        let live = ThreadURL.id(from: webView.url)
         if toggle, isExpanded, card.isVisible,
-           (convo == nil && showingPicker) || (convo != nil && convo?.url == live) {
+           (convo == nil && showingPicker) || (convo != nil && convo?.id == live) {
             collapse(); return
         }
         if let convo {
             // Promote the opened head to the newest contact slot.
-            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == convo.url }), i != 1 {
+            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == convo.id }), i != 1 {
                 moveBubble(from: i, to: 1)
                 lastOpenedIndex = 1
             }
             showThread(convo.url)
             // Reading it clears it; don't make the user wait for the next snapshot.
-            bubbles.first { conversation(of: $0)?.url == convo.url }
+            bubbles.first { conversation(of: $0)?.id == convo.id }
                 .flatMap { chip($0) }?.setBadge(nil)
         } else {
             showPicker()
@@ -2049,8 +2056,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // Already showing it: `open` would read that as "same bubble twice"
         // and fold the card away.
         if isExpanded, card.isVisible, !showingPicker {
-            currentThread = thread
-            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == thread }) {
+            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == ThreadURL.id(from: thread) }) {
                 lastOpenedIndex = i
                 wake()
             }
@@ -2058,7 +2064,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             card.makeKey()
             return
         }
-        if let i = bubbles.firstIndex(where: { conversation(of: $0)?.url == thread }),
+        if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == ThreadURL.id(from: thread) }),
            let convo = conversation(of: bubbles[i]) {
             lastOpenedIndex = i
             open(convo, toggle: false)
@@ -2132,10 +2138,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         applyThreadSize()
         if card.isVisible { keepCardOnScreen() }
         installContent(webView)
-        currentThread = url
         scheduleCardFixups()
 
-        let alreadyOpen = ThreadURL.canonical(from: webView.url) == url
+        let alreadyOpen = ThreadURL.id(from: webView.url) == ThreadURL.id(from: url)
         // Patch helpers onto the live page first — user scripts only run at
         // document start, so an already-open Messenger session would keep the
         // old "same URL ⇒ no-op" behaviour otherwise.
@@ -2186,7 +2191,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// The app chip opens our own list — Messenger's inbox URL immediately
     /// redirects into the most recent conversation, so its list can't be shown.
     private func showPicker() {
-        currentThread = nil
         showingPicker = true
         pushCardClip()
         // Size against the chain's display — `card.screen` still names the old
@@ -2203,7 +2207,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // no-op when that contact already has one, and the card would then
             // fold down onto somebody else's bubble.
             self.lastOpenedIndex = self.bubbles.firstIndex {
-                self.conversation(of: $0)?.url == convo.url
+                self.conversation(of: $0)?.id == convo.id
             } ?? 0
             self.showThread(convo.url)
         }
@@ -2213,7 +2217,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                 guard let self, deleted else { return }
                 // Its head goes too; index 0 is the app chip and never does.
                 if let i = self.bubbles.firstIndex(where: {
-                    self.conversation(of: $0)?.url == convo.url
+                    self.conversation(of: $0)?.id == convo.id
                 }), i > 0 {
                     self.adjustIndicesAfterRemoval(i)
                     self.removeBubble(at: i)
@@ -2763,6 +2767,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     private func pollMouse() {
+        guard !NSScreen.screens.isEmpty else { return }
         let p = NSEvent.mouseLocation
         if dragging {
             // Button released on another display never reaches the chip view.
@@ -2800,7 +2805,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     fileprivate func tick(_ link: CADisplayLink) {
-        guard !bubbles.isEmpty else { park(); return }
+        // No display to lay out on: rest until `screensChanged` wakes us.
+        guard !bubbles.isEmpty, !NSScreen.screens.isEmpty else { park(); return }
 
         // targetTimestamp deltas, never link.duration: duration is the display's
         // fastest frame and stays 1/120 on ProMotion even while the link runs at
@@ -3572,12 +3578,18 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             let area = i.isNull ? 0 : i.width * i.height
             if area > bestArea { bestArea = area; best = s }
         }
-        if let best { return best }
-        return NSScreen.screens.min {
+        let found = best ?? NSScreen.screens.min {
             hypot($0.frame.midX - p.x, $0.frame.midY - p.y)
                 < hypot($1.frame.midX - p.x, $1.frame.midY - p.y)
-        } ?? NSScreen.main ?? NSScreen.screens[0]
+        } ?? NSScreen.main
+        if let found { lastKnownScreen = found; return found }
+        // While displays reconfigure, `NSScreen.screens` can be briefly empty
+        // (a clamshell Mac losing its only monitor); `screens[0]` trapped here.
+        // The display we were last on is the best answer until one returns.
+        return lastKnownScreen ?? NSScreen()
     }
+
+    private var lastKnownScreen: NSScreen? = NSScreen.main ?? NSScreen.screens.first
 
     private var anchorScreen: NSScreen {
         screen(nearest: centres.indices.contains(anchorIndex)
@@ -3603,7 +3615,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
            let x = saved["x"] as? Double, let y = saved["y"] as? Double {
             c = NSPoint(x: x, y: y)
         } else {
-            let v = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+            let v = (NSScreen.main ?? screen(nearest: .zero)).visibleFrame
             c = NSPoint(x: v.maxX - Chain.canvas / 2 - Chain.margin,
                         y: v.maxY - Chain.canvas / 2 - 80)
         }

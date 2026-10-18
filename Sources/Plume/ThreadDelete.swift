@@ -40,11 +40,3 @@ enum ThreadDeleteOutcome: String {
         }
     }
 }
-
-extension ThreadURL {
-    /// The conversation id alone — the same thread can be listed under `/t/`
-    /// in one place and `/e2ee/t/` in another.
-    static func id(from url: URL?) -> String? {
-        canonical(from: url)?.pathComponents.last { $0 != "/" }
-    }
-}
