@@ -1,5 +1,4 @@
 import AppKit
-import QuartzCore
 import WebKit
 
 // Diagnostic multi-display traces. No-op in release so notarized builds never
@@ -59,8 +58,6 @@ private final class ChipMenuLift: NSObject, NSMenuDelegate {
         // Submenus / delayed presentation need another pass next turn.
         DispatchQueue.main.async { ChipMenuLift.elevateOpenMenus() }
     }
-
-    func menuDidClose(_ menu: NSMenu) {}
 
     static func elevateOpenMenus() {
         let target = NSWindow.Level(rawValue: PlumeOverlay.level.rawValue + 1)
@@ -1149,7 +1146,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// The picker is a list, not a page — it should not inherit the width the
     /// user chose for reading a conversation.
     private static let pickerSize = NSSize(width: 384, height: 620)
-    private static let titleStrip: CGFloat = 22
     // Bumped: the previous key holds sizes produced by an auto-widen that has
     // since been removed, and those are not sizes anyone chose.
     private static let sizeKey = "plume.bubbleCardSize2"
@@ -1262,7 +1258,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         panel.setFrameOrigin(NSPoint(x: centre.x - Chain.canvas / 2,
                                      y: centre.y - Chain.canvas / 2))
-        panel.level = PlumeOverlay.level
         PlumeOverlay.apply(to: panel)
         panel.orderFrontRegardless()
     }
@@ -1353,7 +1348,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     private func conversation(of panel: BubblePanel) -> BubbleConversation? {
-        (panel.contentView as? BubbleChipView)?.conversation
+        chip(panel)?.conversation
     }
 
     /// Match the contact chain to Messenger's newest-first list, keeping the
@@ -1518,29 +1513,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         let m = Self.inset
-        var rules = [
+        NSLayoutConstraint.activate([
             view.topAnchor.constraint(equalTo: content.topAnchor, constant: m),
             view.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -m),
+            view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: m),
             view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -m),
-        ]
-        if view === webView {
-            view.wantsLayer = true
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            view.layer?.transform = CATransform3DIdentity
-            CATransaction.commit()
-            let lead = view.leadingAnchor.constraint(equalTo: content.leadingAnchor,
-                                                     constant: m)
-            sidebarConstraint = lead
-            rules.append(lead)
-        } else {
-            sidebarConstraint = nil
-            rules.append(view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: m))
-        }
-        NSLayoutConstraint.activate(rules)
+        ])
     }
-
-    private var sidebarConstraint: NSLayoutConstraint?
 
     /// When Messenger's photo theatre opens, expand the card to nearly fill the
     /// display — theatre centres on the full page, so only a wide window lays
@@ -1562,10 +1541,8 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func pushCardClip() {
         guard webView != nil else { return }
-        clearTheaterOptics()
         let active = isExpanded && !showingPicker
             && webView.superview === card.contentView
-        sidebarConstraint?.constant = Self.inset
         let js = """
         try {
           document.documentElement.classList.toggle("plume-card-thread", \(active ? "true" : "false"));
@@ -1583,15 +1560,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             stopOverlayFitTimer()
             exitTheaterMode(restore: false)
         }
-    }
-
-    private func clearTheaterOptics() {
-        guard webView != nil else { return }
-        webView.wantsLayer = true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        webView.layer?.transform = CATransform3DIdentity
-        CATransaction.commit()
     }
 
     /// Poll theatre open/close while a thread is showing in the card.
@@ -1648,8 +1616,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         theaterHoldUntil = CACurrentMediaTime() + 2.0
         preTheaterSize = card.contentRect(forFrameRect: card.frame).size
 
-        // Give Messenger the full page so theatre centres in the card.
-        sidebarConstraint?.constant = Self.inset
         pushCardClip()
 
         let visible = hostScreen.visibleFrame
@@ -1685,7 +1651,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             card.setContentSize(size)
         }
         preTheaterSize = nil
-        sidebarConstraint?.constant = Self.inset
         pushCardClip()
         if restore, isExpanded, card.isVisible {
             positionCard()
@@ -1723,7 +1688,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
         let limits = NSMenu()
         limits.delegate = chipMenuLift
-        for n in [3, 5, 8, 12] {
+        for n in Preferences.bubbleLimitChoices {
             let item = NSMenuItem(title: "\(n)", action: #selector(pickLimit(_:)), keyEquivalent: "")
             item.target = self
             item.tag = n
@@ -1808,9 +1773,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
-        p.hidesOnDeactivate = false
         p.isReleasedWhenClosed = false
-        p.level = PlumeOverlay.level
         PlumeOverlay.apply(to: p)
         p.contentView = NSView(frame: p.contentRect(forFrameRect: p.frame))
         return p
@@ -2261,7 +2224,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// virtualised list first so older threads exist in the DOM.
     private func refreshPicker(preserveScroll: Bool, expandFirst: Bool) {
         listView.setLoadMoreBusy(true)
-        let finish: (Bool) -> Void = { [weak self] scrolled in
+        let finish: () -> Void = { [weak self] in
             guard let self else { return }
             let want = self.pickerLimit
             self.fetchConversations?(want) { [weak self] convos in
@@ -2277,11 +2240,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                 self.listView.setLoadMoreBusy(false)
             }
         }
-        guard expandFirst else { finish(false); return }
-        webView.evaluateJavaScript("window.__plumeExpandConvList && window.__plumeExpandConvList()") { result, _ in
-            let scrolled = (result as? Bool) == true
+        guard expandFirst else { finish(); return }
+        webView.evaluateJavaScript("window.__plumeExpandConvList && window.__plumeExpandConvList()") { _, _ in
             // Give React a beat to mount the newly revealed rows.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { finish(scrolled) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { finish() }
         }
     }
 
@@ -2294,10 +2256,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         refreshPicker(preserveScroll: true, expandFirst: true)
     }
 
-    /// Back to bubbles. Ordering the card out and detaching the web view is what
-    /// lets WebKit stop rendering it; the view itself stays alive so messages
-    /// keep arriving and reopening is instant.
     /// Back to bubbles: the card folds down towards the head it came from.
+    /// Ordering the card out and detaching the web view is what lets WebKit
+    /// stop rendering it; the view itself stays alive so messages keep
+    /// arriving and reopening is instant.
     ///
     /// This animates the content LAYER, never the window frame. Frame animation
     /// meant restoring the size afterwards, and any path that missed the restore
@@ -2841,7 +2803,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         lastFrame = now
         let dt = CGFloat(min(max(raw, Double(Chain.dtMin)), Double(Chain.dtMax)))
 
-        refreshHover()
+        // Re-apply sticky focus weights only. Re-picking from geometry belongs
+        // in `cursorMoved` / `pollMouse`; here packing springs would flip the
+        // winner every frame and the zoom would stutter.
+        applyHoverFromFocus()
         var moving = integrate(dt: dt, now: now)
         moving = advanceMagnification(dt: dt) || moving
         commit()
@@ -3054,7 +3019,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             } else if snapped != panel.frame.origin {
                 panel.setFrameOrigin(snapped)
             }
-            (panel.contentView as? BubbleChipView)?.setDiameter(diameters[i])
+            chip(panel)?.setDiameter(diameters[i])
         }
         // Panels are peak-sized and overlap when step < canvas. A nil hitTest
         // does NOT fall through to the window below — so without click-through,
@@ -3233,18 +3198,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         return v.contains(p)
     }
 
-    /// Re-apply sticky focus weights. Does NOT re-pick from geometry — that
-    /// belongs in `cursorMoved` / `pollMouse`, otherwise packing springs flip
-    /// the winner every frame and the zoom stutters.
-    private func refreshHover() { applyHoverFromFocus() }
-
     /// Slot-based Dock magnification. Vertical column uses Y; the docked card
     /// row uses X. The head that owns the open card stays enlarged even when
     /// the pointer is over a neighbour.
     private func recomputeHoverTargets() {
         let p = NSEvent.mouseLocation
         lastHoverMouse = p
-        hoverFocus = pickHoverFocus(at: p)
+        _ = pickHoverFocus(at: p)   // updates `hoverFocus` itself
         applyHoverFromFocus()
     }
 
@@ -3419,7 +3379,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func endDrag(velocity: NSPoint) {
         guard dragging else { return }   // idempotent; a stray call is a no-op
         dragging = false
-        bubbles.forEach { ($0.contentView as? BubbleChipView)?.cancelPress() }
+        bubbles.forEach { chip($0)?.cancelPress() }
         let a = min(anchorIndex, max(0, bubbles.count - 1))
         guard centres.indices.contains(a) else { return }
 

@@ -19,6 +19,8 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 - Native file picker for attachments; camera/mic granted for calls
 - In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
 - Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
+- Chat bubbles: an Android-style chain of chat heads that floats over every
+  Space and full-screen app, with the conversation in a card beside it
 - Always-on-top window; toolbar & theming toggles
 - Remembers window size & position; full-screen, back/forward, reload
 
@@ -48,8 +50,7 @@ bash Scripts/install.sh                # build release → /Applications/Plume.a
 bash Scripts/build_app.sh release     # → build/Plume.app
 open build/Plume.app
 
-bash Scripts/make_dmg.sh release       # → build/Plume.dmg (drag-to-install)
-bash Scripts/make_icon.sh              # regenerate Resources/Plume.icns
+bash Scripts/release_sign.sh           # → signed + notarized build/Plume.dmg
 ```
 
 CI runs `swift test` and a release build on a macOS runner for every push and
@@ -63,21 +64,15 @@ ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
 `/Applications` and opens it — login and settings carry over, though a new
 ad-hoc signature can make macOS ask for camera/mic (and, the first time a
 non-PDF attachment is saved to ~/Downloads, Downloads-folder) access again.
-`make_dmg.sh` wraps that into a compressed DMG with an `/Applications`
-symlink. The icon — a feather on a blue→indigo gradient — is drawn
-programmatically by `Scripts/icon_gen.swift`; rerun `make_icon.sh` only when
-the design changes (the committed `Resources/Plume.icns` is used otherwise).
+`release_sign.sh` builds a universal binary, signs it with a Developer ID,
+notarizes and staples both the app and a drag-to-install DMG. The icon — a
+feather on a blue→indigo gradient — is drawn by `Scripts/icon_gen.swift`;
+`build_app.sh` renders it into `Resources/Plume.icns` on the first build.
 
 ## Architecture
 
-| Piece | File |
-|---|---|
-| Process entry / `NSApplication` boot | `Sources/Plume/main.swift` |
-| Window, menus, notification routing | `Sources/Plume/AppDelegate.swift` |
-| `WKWebView` config, nav, uploads, badge | `Sources/Plume/WebViewController.swift` |
-| Call / `window.open` windows | `Sources/Plume/PopupWindowController.swift` |
-| Injected JS (notification + badge bridge) | `Sources/Plume/InjectedScript.swift` |
-| URLs, user-agent, internal-host rules | `Sources/Plume/Constants.swift` |
+The file-by-file map lives in [`AGENTS.md`](AGENTS.md#layout), next to the
+rules that are easy to break when changing those files.
 
 ### Why no Rust
 

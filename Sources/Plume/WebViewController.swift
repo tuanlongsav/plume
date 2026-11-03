@@ -214,7 +214,7 @@ final class WebViewController: NSViewController {
     }
 
     // Called on the main thread (from title KVO); no dispatch needed.
-    func setBadge(_ count: Int) {
+    private func setBadge(_ count: Int) {
         NSApp.dockTile.badgeLabel = count > 99 ? "99+" : (count > 0 ? String(count) : nil)
         // The chat bubble badges itself from this instead of watching the DOM.
         NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,
@@ -250,12 +250,7 @@ final class WebViewController: NSViewController {
         wv.removeFromSuperview()
         wv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(wv, positioned: .below, relativeTo: view.subviews.first)
-        NSLayoutConstraint.activate([
-            wv.topAnchor.constraint(equalTo: view.topAnchor),
-            wv.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            wv.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            wv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        NSLayoutConstraint.activate(pinEdges(wv, to: view))
     }
 
     // MARK: Conversation snapshot (chat bubbles)
@@ -338,11 +333,20 @@ final class WebViewController: NSViewController {
             guard response == .alertSecondButtonReturn, let self else { completion?(false); return }
             self.runDelete(url: url, completion: completion)
         }
-        if let host = bubbles?.sheetHost ?? webView.window, host.isVisible {
-            alert.beginSheetModal(for: host, completionHandler: finish)
+        present(alert, completion: finish)
+    }
+
+    /// As a sheet on whichever window is showing Messenger. With no visible
+    /// host (bubble card folded away) a sheet would never appear, so fall back
+    /// to a modal raised above the `.screenSaver`-level bubbles.
+    private func present(_ alert: NSAlert,
+                         completion: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        if let host = ChatBubbleController.shared?.sheetHost ?? webView.window, host.isVisible {
+            alert.beginSheetModal(for: host, completionHandler: completion)
         } else {
             alert.window.level = .screenSaver
-            finish(alert.runModal())
+            let response = alert.runModal()
+            completion?(response)
         }
     }
 
@@ -361,12 +365,7 @@ final class WebViewController: NSViewController {
         alert.alertStyle = .warning
         alert.messageText = L.t("Chưa xoá được đoạn chat", "Couldn't delete the chat")
         alert.informativeText = message
-        if let host = ChatBubbleController.shared?.sheetHost ?? webView.window, host.isVisible {
-            alert.beginSheetModal(for: host, completionHandler: nil)
-        } else {
-            alert.window.level = .screenSaver
-            alert.runModal()
-        }
+        present(alert)
     }
 
     // MARK: Conversation navigation (Caprine port)
@@ -707,7 +706,7 @@ extension WebViewController: WKDownloadDelegate {
     }
 
     /// Hold the download and start delegating its callbacks to us.
-    func beginDownload(_ download: WKDownload) {
+    private func beginDownload(_ download: WKDownload) {
         download.delegate = self          // delegate is weak…
         activeDownloads.insert(download)  // …so keep a strong reference here
         scheduleDownloadIndicator()

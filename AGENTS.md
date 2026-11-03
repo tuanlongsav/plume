@@ -29,12 +29,12 @@ dependencies.
 | Unit tests | `swift test` |
 | Build the `.app` | `bash Scripts/build_app.sh release` → `build/Plume.app` (`debug` also works) |
 | Build and install/update in `/Applications` | `bash Scripts/install.sh` |
-| Drag-to-install DMG (universal, ad-hoc signed) | `bash Scripts/make_dmg.sh` → `build/Plume.dmg` |
 | Developer ID signed + notarized DMG | `bash Scripts/release_sign.sh` (needs the cert and the `vkey` notarytool profile) |
-| Regenerate the icon | `bash Scripts/make_icon.sh` (only when the design changes) |
+| Regenerate the icon | `bash Scripts/make_icon.sh` (`build_app.sh` runs it when `Resources/Plume.icns` is missing; the `.icns` is generated, not committed) |
 
 Environment knobs: `PLUME_UNIVERSAL=1` (arm64 + x86_64), `PLUME_SIGN_IDENTITY`
-(Developer ID instead of ad-hoc), `PLUME_INSTALL_DIR` (default `/Applications`).
+(Developer ID instead of ad-hoc), `PLUME_INSTALL_DIR` (default `/Applications`),
+`PLUME_NOTARY_PROFILE` (notarytool keychain profile, default `vkey`).
 
 CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test` and
 `bash Scripts/build_app.sh release` on every push and pull request, and keeps
@@ -61,7 +61,6 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `PDFViewerWindowController.swift` | In-app PDF viewer for attachments |
 | `PopupWindowController.swift` | Real windows for `window.open` (calls start on `about:blank`) |
 | `Tests/PlumeTests/` | XCTest; JS that needs no DOM is run in `JavaScriptCore` |
-| `docs/ui-redesign-brief.md` | Design brief (Vietnamese) |
 
 ## Rules that are easy to break
 

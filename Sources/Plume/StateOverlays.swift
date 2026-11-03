@@ -48,8 +48,9 @@ final class SpinnerView: NSView {
     private let arc = CAShapeLayer()
     private let diameter: CGFloat
 
-    init(diameter: CGFloat = 14, lineWidth: CGFloat = 2, color: NSColor = Theme.accent) {
+    init(diameter: CGFloat = 14) {
         self.diameter = diameter
+        let lineWidth: CGFloat = 2
         super.init(frame: NSRect(x: 0, y: 0, width: diameter, height: diameter))
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
@@ -57,7 +58,7 @@ final class SpinnerView: NSView {
         let rect = CGRect(x: inset, y: inset, width: diameter - lineWidth, height: diameter - lineWidth)
         arc.path = CGPath(ellipseIn: rect, transform: nil)
         arc.fillColor = NSColor.clear.cgColor
-        arc.strokeColor = color.cgColor
+        arc.strokeColor = Theme.accent.cgColor
         arc.lineWidth = lineWidth
         arc.lineCap = .round
         arc.strokeStart = 0

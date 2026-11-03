@@ -1,6 +1,6 @@
 #!/bin/bash
-# Regenerate Resources/Plume.icns from Scripts/icon_gen.swift. Run this only
-# when the icon design changes; build_app.sh just copies the committed .icns.
+# Render Resources/Plume.icns from Scripts/icon_gen.swift. build_app.sh runs
+# this when the file is missing; rerun it by hand after changing the design.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -3,8 +3,8 @@
 //
 //   swift Scripts/icon_gen.swift <output.iconset>
 //
-// Each call recompiles in a second or two; the icon is regenerated rarely
-// (via Scripts/make_icon.sh), not on every build, so the cost is fine.
+// Each call recompiles in a second or two. Scripts/make_icon.sh runs it only
+// when Resources/Plume.icns is missing (fresh clone, CI), so the cost is fine.
 import AppKit
 
 let outDir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Plume.iconset"

@@ -37,6 +37,10 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.alwaysOnTop") }
     }
 
+    /// Values offered for `bubbleLimit`. Shared by the Window menu and the
+    /// bubble chip menu, which used to offer different lists.
+    static let bubbleLimitChoices = [3, 5, 8, 12]
+
     /// How many contact bubbles the chain may hold, newest first.
     static var bubbleLimit: Int {
         get { (defaults.object(forKey: "plume.bubbleLimit") as? Int) ?? 5 }
