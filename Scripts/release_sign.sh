@@ -25,6 +25,10 @@ SIGN_IDENTITY="${PLUME_SIGN_IDENTITY:-Developer ID Application: Long Hoang Tuan 
 # One Apple ID and team covers every app; the profile is named after the first
 # project that created it.
 KEYCHAIN_PROFILE="${PLUME_NOTARY_PROFILE:-vkey}"
+# The designated requirement the in-app updater enforces on every update
+# (Updater.requirementText; UpdateVerifierTests keeps the two identical). An
+# app that fails it would be rejected by every installed copy.
+REQUIREMENT='anchor apple generic and identifier "com.htl.plume" and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "U4B264GM2B"'
 
 VERSION=""
 SKIP_NOTARIZE=0
@@ -103,6 +107,8 @@ grep -qF "Authority=${SIGN_IDENTITY}" <<<"$SIG" \
 grep -q 'flags=.*runtime' <<<"$SIG" \
     || die "hardened runtime is off — notarization would reject this."
 codesign --verify --strict "$APP" || die "app fails signature verification."
+codesign --verify --strict -R="$REQUIREMENT" "$APP" \
+    || die "app does not meet the updater's Developer ID requirement (team U4B264GM2B)."
 
 if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
     echo "--skip-notarize: notarization skipped. The result is NOT shippable."

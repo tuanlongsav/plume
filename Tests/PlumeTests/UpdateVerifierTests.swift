@@ -114,4 +114,36 @@ final class UpdateVerifierTests: XCTestCase {
     func testEmbeddedPublicKeyIsUsable() {
         XCTAssertNotNil(UpdateKeys.publicKey, "UpdateKeys.publicKeyBase64 is not a 32-byte Ed25519 key")
     }
+
+    // Fields the app does not read are ignored; a missing signature is not.
+    func testManifestDecodingToleratesExtrasButNotGaps() throws {
+        let full = """
+        {"format": 1, "version": "1.2", "minimumSystemVersion": "14.0",
+         "asset": "Plume-1.2.zip", "length": 1, "sha256": "ab", "ed25519": "cd",
+         "notes": "ignored"}
+        """
+        let m = try JSONDecoder().decode(UpdateManifest.self, from: Data(full.utf8))
+        XCTAssertNil(m.build)
+        let unsigned = full.replacingOccurrences(of: "\"ed25519\": \"cd\",", with: "")
+        XCTAssertThrowsError(try JSONDecoder().decode(UpdateManifest.self, from: Data(unsigned.utf8)))
+    }
+
+    /// If the requirement failed to compile, every install would silently
+    /// count as "not Developer ID" and never update.
+    func testDeveloperIDRequirementCompiles() {
+        XCTAssertNotNil(Updater.makeRequirement())
+        XCTAssertTrue(Updater.requirementText.contains("identifier \"\(Updater.bundleID)\""))
+    }
+
+    /// release_sign.sh checks the app it signs against the same requirement
+    /// the updater enforces, so a release from another team's certificate
+    /// fails at build time instead of being rejected by every install.
+    func testReleaseScriptChecksTheUpdaterRequirement() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/release_sign.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains("REQUIREMENT='\(Updater.requirementText)'"),
+                      "release_sign.sh must check the exact requirement in Updater.swift")
+    }
 }
