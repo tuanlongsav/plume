@@ -85,4 +85,38 @@ enum Preferences {
         get { defaults.object(forKey: "plume.shortcuts") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "plume.shortcuts") }
     }
+
+    // MARK: Updates (see Updater)
+
+    /// Look for a new release once a day. Defaults to on.
+    static var autoUpdateCheck: Bool {
+        get { defaults.object(forKey: "plume.autoUpdateCheck") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "plume.autoUpdateCheck") }
+    }
+
+    static var lastUpdateCheck: Date? {
+        get { defaults.object(forKey: "plume.lastUpdateCheck") as? Date }
+        set { defaults.set(newValue, forKey: "plume.lastUpdateCheck") }
+    }
+
+    /// "Skip This Version": automatic checks stay quiet about this one.
+    static var skippedVersion: String? {
+        get { defaults.string(forKey: "plume.skippedVersion") }
+        set { defaults.set(newValue, forKey: "plume.skippedVersion") }
+    }
+
+    /// Set just before relaunching into a new version, so that version can
+    /// say it was updated — once.
+    static var pendingUpdateNotice: String? {
+        get { defaults.string(forKey: "plume.pendingUpdateNotice") }
+        set { defaults.set(newValue, forKey: "plume.pendingUpdateNotice") }
+    }
+
+    /// `owner/name` of the GitHub repository releases come from. Hidden: it
+    /// exists for dry runs against a scratch repository
+    /// (`defaults write com.htl.plume plume.updateRepo owner/name`). Signature
+    /// and Developer ID checks apply whatever it says.
+    static var updateRepo: String {
+        defaults.string(forKey: "plume.updateRepo") ?? UpdateFeed.defaultRepo
+    }
 }

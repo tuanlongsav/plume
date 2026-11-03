@@ -63,6 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         controller.load()
         NSApp.activate()
+        Updater.shared.scheduleLaunchCheck()
+    }
+
+    /// A date comparison until a day has passed since the last update check,
+    /// so it costs nothing on every activation.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Updater.shared.checkIfDue()
     }
 
     /// Opts into secure coding for restored window state; without it macOS 14
@@ -245,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
     @objc private func deleteConversation() { controller.deleteCurrentConversation() }
     @objc private func toggleShortcuts()  { Preferences.shortcuts.toggle() }
+    @objc private func toggleAutoUpdate() { Preferences.autoUpdateCheck.toggle() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
@@ -267,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 ? L.t("Về cửa sổ chính", "Back to Main Window")
                 : L.t("Chuyển sang bong bóng", "Switch to Chat Bubble")
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
+        case #selector(toggleAutoUpdate): item.state = Preferences.autoUpdateCheck ? .on : .off
         case #selector(jumpToConversation(_:)), #selector(nextConversation),
              #selector(prevConversation), #selector(nextUnread),
              #selector(findConversation):
@@ -292,6 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: L.t("Giới thiệu Plume", "About Plume"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L.t("Kiểm tra cập nhật…", "Check for Updates…"), action: #selector(Updater.checkNow(_:)), keyEquivalent: "").target = Updater.shared
+        appMenu.addItem(withTitle: L.t("Tự động kiểm tra cập nhật", "Check for Updates Automatically"), action: #selector(toggleAutoUpdate), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L.t("Ẩn Plume", "Hide Plume"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: L.t("Ẩn các ứng dụng khác", "Hide Others"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
