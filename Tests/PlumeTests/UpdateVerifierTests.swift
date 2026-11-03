@@ -109,10 +109,9 @@ final class UpdateVerifierTests: XCTestCase {
         }
     }
 
-    /// Empty until the maintainer pastes the real key; once set, it must be a
-    /// usable Ed25519 public key, or every install would reject every update.
-    func testEmbeddedPublicKeyIsUsableOnceSet() {
-        guard !UpdateKeys.publicKeyBase64.isEmpty else { return }
+    /// An empty or malformed key turns the updater off in every build that
+    /// ships it, and those installs could then only be updated by hand.
+    func testEmbeddedPublicKeyIsUsable() {
         XCTAssertNotNil(UpdateKeys.publicKey, "UpdateKeys.publicKeyBase64 is not a 32-byte Ed25519 key")
     }
 }
