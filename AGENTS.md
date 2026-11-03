@@ -58,7 +58,9 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `AppDelegate.swift` | Main window, menus, notification routing, bubble-mode switching |
 | `WebViewController.swift` | `WKWebView` config, navigation, downloads, badge, script-message bridge |
 | `InjectedScript.swift` | All JS/CSS injected into the page (notification bridge, conversation snapshot, theatre detection, delete-chat flow) |
-| `ChatBubbleController.swift` | Bubble mode: chain physics (`Chain`, `CADisplayLink`), card panel, conversation picker, multi-display follow |
+| `ChatBubbleController.swift` | Bubble mode controller: chain membership, frame loop (`CADisplayLink`), card, hover, gestures, multi-display follow |
+| `Chain.swift`, `BubbleChipView.swift`, `BubblePanels.swift`, `ConversationPicker.swift`, `BubbleConversation.swift`, `BubbleOverlay.swift` | Bubble-mode parts: chain geometry and springs, one chat head, the card/bubble/tether panels, the conversation list, the snapshot model and avatar cache, overlay level and `ChipMenuLift` |
+| `PlumeTrace.swift` | DEBUG-only multi-display trace log (no-op in release) |
 | `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift` | Small pure-logic helpers, unit-tested |
 | `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
 | `Preferences.swift` | `UserDefaults`-backed settings |

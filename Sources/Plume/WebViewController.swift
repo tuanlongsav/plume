@@ -835,3 +835,8 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         }
     }
 }
+
+extension Notification.Name {
+    /// Posted by the main web view whenever the dock badge changes.
+    static let plumeUnreadChanged = Notification.Name("plume.unreadChanged")
+}
