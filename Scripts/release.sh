@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish Plume X.Y to GitHub Releases, where the in-app updater finds it.
 #
-#   bash Scripts/release.sh X.Y [--skip-notarize] [--no-publish]
+#   bash Scripts/release.sh X.Y [--skip-notarize] [--no-publish] [--rotating-key]
 #
 #   1. preflight     clean tree on an up-to-date main, new version, gh logged
 #                    in, signing key present and matching UpdateKeys.swift,
@@ -13,6 +13,9 @@
 #
 # --no-publish stops after step 3 (dry run; artifacts stay in build/).
 # --skip-notarize implies --no-publish: an unnotarized build must never ship.
+# --rotating-key is for the one release that ships a NEW public key in
+# UpdateKeys.swift while still being signed with the OLD key (the one every
+# installed copy trusts); see docs/RELEASE.md before using it.
 #
 # Never rebuild a version after publishing it: new bytes mean a new
 # signature, and the manifest already on GitHub would no longer match.
@@ -24,11 +27,13 @@ REPO="${PLUME_RELEASE_REPO:-tuanlongsav/plume}"
 VERSION=""
 SKIP_NOTARIZE=0
 PUBLISH=1
+ROTATING=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-notarize) SKIP_NOTARIZE=1; PUBLISH=0; shift ;;
         --no-publish)    PUBLISH=0; shift ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --rotating-key)  ROTATING=1; shift ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         -*) echo "Unknown argument: $1" >&2; exit 1 ;;
         *)
             [[ -z "$VERSION" ]] || { echo "Unexpected argument: $1" >&2; exit 1; }
@@ -39,7 +44,7 @@ done
 step() { printf '\n=== %s ===\n' "$1"; }
 die()  { echo "FAIL: $1" >&2; exit 1; }
 
-[[ -n "$VERSION" ]] || die "usage: $0 X.Y [--skip-notarize] [--no-publish]"
+[[ -n "$VERSION" ]] || die "usage: $0 X.Y [--skip-notarize] [--no-publish] [--rotating-key]"
 # Same rule as build_app.sh, checked here so preflight fails before a build.
 [[ "$VERSION" =~ ^([1-9][0-9]*|0)\.([1-9]?[0-9])$ ]] \
     || die "version must be MAJOR.MINOR, no leading zeros, MINOR ≤ 99 (got: $VERSION)"
@@ -59,8 +64,15 @@ step "Preflight"
 PUB="$("${SIGN_TOOL[@]}" pubkey "$KEY")"
 # The app only accepts archives signed by the key it embeds. Publishing with
 # any other key would ship an update every existing install rejects.
-grep -qF "publicKeyBase64 = \"$PUB\"" Sources/Plume/UpdateKeys.swift \
-    || die "Sources/Plume/UpdateKeys.swift does not embed this key's public half ($PUB)."
+if grep -qF "publicKeyBase64 = \"$PUB\"" Sources/Plume/UpdateKeys.swift; then
+    [[ "$ROTATING" -eq 0 ]] \
+        || die "--rotating-key, but UpdateKeys.swift already embeds the signing key: nothing is rotating."
+elif [[ "$ROTATING" -eq 1 ]]; then
+    echo "WARNING: key rotation release — signed with the old key ($PUB)," >&2
+    echo "         shipping the new key in UpdateKeys.swift." >&2
+else
+    die "Sources/Plume/UpdateKeys.swift does not embed this key's public half ($PUB)."
+fi
 
 mkdir -p build
 # The section under "## X.Y" up to the next "## " heading becomes the notes.

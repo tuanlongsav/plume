@@ -21,6 +21,9 @@ WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 - Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
 - Chat bubbles: an Android-style chain of chat heads that floats over every
   Space and full-screen app, with the conversation in a card beside it
+- Updates itself from GitHub Releases: checks once a day, asks before
+  installing, and only installs archives signed with Plume's update key and
+  apps signed with its Developer ID
 - Always-on-top window; toolbar & theming toggles
 - Remembers window size & position; full-screen, back/forward, reload
 
@@ -50,7 +53,7 @@ bash Scripts/install.sh                # build release → /Applications/Plume.a
 bash Scripts/build_app.sh release     # → build/Plume.app
 open build/Plume.app
 
-bash Scripts/release_sign.sh           # → signed + notarized build/Plume.dmg
+bash Scripts/release.sh 1.0            # sign, notarize and publish a release
 ```
 
 CI runs `swift test` and a release build on a macOS runner for every push and
@@ -64,10 +67,22 @@ ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
 `/Applications` and opens it — login and settings carry over, though a new
 ad-hoc signature can make macOS ask for camera/mic (and, the first time a
 non-PDF attachment is saved to ~/Downloads, Downloads-folder) access again.
-`release_sign.sh` builds a universal binary, signs it with a Developer ID,
-notarizes and staples both the app and a drag-to-install DMG. The icon — a
+`release.sh` (via `release_sign.sh`) builds a universal binary, signs it with
+a Developer ID, notarizes and staples the app and a drag-to-install DMG, signs
+the app zip for the updater and publishes all of it as a GitHub release — see
+[`docs/RELEASE.md`](docs/RELEASE.md). The icon — a
 feather on a blue→indigo gradient — is drawn by `Scripts/icon_gen.swift`;
 `build_app.sh` renders it into `Resources/Plume.icns` on the first build.
+
+## Updates and privacy
+
+Once a day (and from Plume ▸ Check for Updates…) Plume asks
+`api.github.com/repos/tuanlongsav/plume/releases/latest` whether a newer
+version exists. The request carries no cookies, account or identifier — only a
+`Plume/<version>` User-Agent — and can be turned off under Plume ▸ Check for
+Updates Automatically. A download is installed only if its Ed25519 signature
+matches the key built into the app and the app inside is signed by Plume's
+Developer ID; local builds never update themselves.
 
 ## Architecture
 
