@@ -331,9 +331,7 @@ enum InjectedScript {
             post("notify", {
                 id: id,
                 title: String(title || ""),
-                body: String(this.body || ""),
-                icon: String(this.icon || ""),
-                tag: String(this.tag || "")
+                body: String(this.body || "")
             });
             // Fire onshow after the caller has had a chance to assign it
             // (the spec delivers it asynchronously, not from the constructor).
@@ -694,11 +692,9 @@ enum InjectedScript {
         try {
             var main = document.querySelector('[role="main"]');
             if (!main) return false;
-            var phrases = [
-                "jump to present", "tin nhan moi", "tin nhắn mới",
-                "new message", "new messages", "xem tin nhan moi",
-                "xem tin nhắn mới", "nhay den hien tai", "nhảy đến hiện tại"
-            ];
+            // Labels pass through norm() and are matched by substring, so
+            // accent-free stems cover the accented and plural variants.
+            var phrases = ["jump to present", "nhay den hien tai", "new message", "tin nhan moi"];
             \#(InjectedScript.normJS)
             var jumped = false;
             var controls = main.querySelectorAll('[role="button"], button, a[role="link"]');

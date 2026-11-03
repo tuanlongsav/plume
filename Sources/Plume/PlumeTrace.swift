@@ -10,7 +10,7 @@ enum PlumeTrace {
         #if DEBUG
         guard let d = (line() + "\n").data(using: .utf8) else { return }
         if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(d); try? h.close()
+            _ = try? h.seekToEnd(); try? h.write(contentsOf: d); try? h.close()
         } else {
             try? d.write(to: url)
         }

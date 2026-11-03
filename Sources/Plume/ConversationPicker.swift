@@ -8,7 +8,6 @@ final class ConversationRow: NSView {
     var onPick: ((BubbleConversation) -> Void)?
     /// Right-click → "Delete Chat…". No menu at all while this is nil.
     var onDelete: ((BubbleConversation) -> Void)?
-    private static let menuLift = ChipMenuLift()
     private let avatarView = NSImageView()
     private let initialsLabel = NSTextField(labelWithString: "")
     private var highlighted = false
@@ -99,12 +98,8 @@ final class ConversationRow: NSView {
         guard onDelete != nil else { super.rightMouseDown(with: event); return }
         let menu = NSMenu()
         // The card floats at the overlay tier; a plain menu opens beneath it.
-        menu.delegate = Self.menuLift
-        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
-                              action: #selector(deleteTapped), keyEquivalent: "")
-        item.target = self
-        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-        menu.addItem(item)
+        menu.delegate = ChipMenuLift.shared
+        menu.addItem(.deleteChat(target: self, action: #selector(deleteTapped)))
         menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
     }
 

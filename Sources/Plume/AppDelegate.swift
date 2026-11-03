@@ -406,29 +406,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let limitItem = windowMenu.addItem(withTitle: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
                                            action: nil, keyEquivalent: "")
-        let limitMenu = NSMenu()
-        for n in Preferences.bubbleLimitChoices {
-            let it = limitMenu.addItem(withTitle: "\(n)", action: #selector(setBubbleLimit(_:)),
-                                       keyEquivalent: "")
-            it.tag = n
-            it.target = self
-        }
-        limitItem.submenu = limitMenu
+        limitItem.submenu = ChatBubbleController.bubbleLimitMenu(
+            target: self, action: #selector(setBubbleLimit(_:)))
         let displayItem = windowMenu.addItem(
             withTitle: L.t("Vị trí màn hình bong bóng", "Bubble Display Placement"),
             action: nil, keyEquivalent: "")
-        let displayMenu = NSMenu()
-        let followIt = displayMenu.addItem(
-            withTitle: L.t("Theo màn hình đang hoạt động", "Follow active display"),
-            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
-        followIt.tag = 1
-        followIt.target = self
-        let stayIt = displayMenu.addItem(
-            withTitle: L.t("Giữ nguyên màn hình hiện tại", "Stay on current display"),
-            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
-        stayIt.tag = 0
-        stayIt.target = self
-        displayItem.submenu = displayMenu
+        displayItem.submenu = ChatBubbleController.bubbleDisplayMenu(
+            target: self, action: #selector(setBubbleFollowDisplay(_:)))
         windowMenu.addItem(withTitle: L.t("Luôn ở trên cùng", "Always on Top"), action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 

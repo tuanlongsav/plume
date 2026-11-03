@@ -192,10 +192,10 @@ final class PDFViewerWindowController: NSWindowController {
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let prev = NSButton(image: NSImage(systemSymbolName: "chevron.up",
-                                           accessibilityDescription: "Previous")!,
+                                           accessibilityDescription: L.t("Kết quả trước", "Previous")) ?? NSImage(),
                             target: self, action: #selector(findPrevious))
         let next = NSButton(image: NSImage(systemSymbolName: "chevron.down",
-                                           accessibilityDescription: "Next")!,
+                                           accessibilityDescription: L.t("Kết quả sau", "Next")) ?? NSImage(),
                             target: self, action: #selector(findNext))
         let done = NSButton(title: L.t("Xong", "Done"),
                             target: self, action: #selector(hideFindBar))

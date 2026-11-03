@@ -42,8 +42,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private static let pickerSize = NSSize(width: 384, height: 620)
     // Bumped: the previous key holds sizes produced by an auto-widen that has
     // since been removed, and those are not sizes anyone chose.
-    private static let sizeKey = "plume.bubbleCardSize2"
-    private static let originKey = "plume.bubbleOrigin"
 
     private let card: BubbleCardPanel
     private let tether = BubbleTetherPanel()
@@ -135,10 +133,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         chip.onDragEnded = { [weak self] v in self?.endDrag(velocity: v) }
         if convo == nil {   // the app chip carries the app-level gestures
             chip.onDoubleClick = { [weak self] in self?.onExitBubbleMode?() }
-            chip.onSecondaryClick = { [weak self, weak chip] p in
-                guard let chip else { return }
-                self?.showChipMenu(from: chip, at: p)
-            }
+            chip.onSecondaryClick = { [weak self] in self?.showChipMenu() }
         }
 
         let i = index.map { min($0, bubbles.count) } ?? bubbles.count
@@ -204,7 +199,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func applyTotalBadge() {
         bubbles.first.flatMap(chip)?
-            .setBadge(unreadTotal > 0 ? (unreadTotal > 99 ? "99+" : String(unreadTotal)) : nil)
+            .setBadge(WebViewController.badgeLabel(unreadTotal))
     }
 
     @objc private func unreadChanged(_ note: Notification) {
@@ -245,6 +240,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         chip(panel)?.conversation
     }
 
+    /// The head showing conversation `id`. A nil id matches the app chip,
+    /// which carries no conversation.
+    private func headIndex(for id: String?) -> Int? {
+        bubbles.firstIndex { conversation(of: $0)?.id == id }
+    }
+
     /// Match the contact chain to Messenger's newest-first list, keeping the
     /// heads the user opened from the picker. Index 0 (app chip) never moves.
     /// Skipped mid-drag so the gesture keeps its grab.
@@ -275,7 +276,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // left is in `desired`, so the chain is already within the limit.
         for (rank, id) in desired.enumerated() {
             let target = rank + 1
-            if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.id == id }) {
+            if let existing = headIndex(for: id) {
                 if existing != target { moveBubble(from: existing, to: target) }
             } else if let convo = byID[id] {
                 let insertAt = min(target, bubbles.count)
@@ -283,13 +284,17 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                     ? centres[min(insertAt, centres.count - 1)]
                     : (centres.first ?? savedHeadCentre())
                 appendBubble(convo, centre: centre, at: insertAt)
-                if anchorIndex >= insertAt { anchorIndex += 1 }
-                if lastOpenedIndex >= insertAt { lastOpenedIndex += 1 }
-                if let focus = hoverFocus, focus >= insertAt { hoverFocus = focus + 1 }
+                adjustIndicesAfterInsertion(insertAt)
             }
         }
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
         wake()
+    }
+
+    private func adjustIndicesAfterInsertion(_ i: Int) {
+        if anchorIndex >= i { anchorIndex += 1 }
+        if lastOpenedIndex >= i { lastOpenedIndex += 1 }
+        if let focus = hoverFocus, focus >= i { hoverFocus = focus + 1 }
     }
 
     private func adjustIndicesAfterRemoval(_ i: Int) {
@@ -338,7 +343,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// off once the chain hits the user's limit.
     private func spawnBubble(for convo: BubbleConversation) {
         pinnedIDs.insert(convo.id)
-        if let existing = bubbles.firstIndex(where: { conversation(of: $0)?.id == convo.id }) {
+        if let existing = headIndex(for: convo.id) {
             // Already open as a head — promote to newest slot.
             if existing != 1 { moveBubble(from: existing, to: 1) }
             return
@@ -350,13 +355,19 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         let centre = centres.first.map { NSPoint(x: $0.x, y: $0.y - Chain.step) } ?? savedHeadCentre()
         appendBubble(convo, centre: centre, at: 1)
-        if anchorIndex >= 1 { anchorIndex += 1 }
-        if lastOpenedIndex >= 1 { lastOpenedIndex += 1 }
-        if let focus = hoverFocus, focus >= 1 { hoverFocus = focus + 1 }
+        adjustIndicesAfterInsertion(1)
         // One more head means one more `step` of room the chain needs; without
         // this the tail is pinned at the screen edge and never reaches rest.
         anchorTarget = clampedAnchor(anchorTarget, index: anchorIndex)
         wake()
+    }
+
+    /// Retire every head and empty the arrays that run parallel to them.
+    private func clearChainState() {
+        bubbles.forEach(retire)
+        bubbles.removeAll()
+        centres.removeAll(); velocities.removeAll()
+        diameters.removeAll(); hoverTargets.removeAll(); born.removeAll()
     }
 
     private func removeBubble(at i: Int) {
@@ -426,7 +437,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// Right after expanding, theatre may still be re-laying out — do not
     /// restore the small card until this deadline (or until it is seen, then lost).
     private var theaterHoldUntil: CFTimeInterval = 0
-    private var mediaCenterTimer: Timer?
+    private var theaterPollTimer: Timer?
     private var overlayPromoteWork: [DispatchWorkItem] = []
 
     /// Encoded once: this runs ~9 times per thread open.
@@ -449,16 +460,16 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         """
         webView.evaluateJavaScript(js, completionHandler: nil)
         if active {
-            startOverlayFitTimer()
+            startTheaterPoll()
         } else {
-            stopOverlayFitTimer()
+            stopTheaterPoll()
             exitTheaterMode(restore: false)
         }
     }
 
     /// Poll theatre open/close while a thread is showing in the card.
-    private func startOverlayFitTimer() {
-        guard mediaCenterTimer == nil else { return }
+    private func startTheaterPoll() {
+        guard theaterPollTimer == nil else { return }
         let t = Timer(timeInterval: 0.22, repeats: true) { [weak self] _ in
             guard let self, self.isExpanded, !self.showingPicker else { return }
             // Covered or on another Space: nobody can open a photo in it, and
@@ -468,12 +479,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         t.tolerance = 0.05
         RunLoop.main.add(t, forMode: .common)
-        mediaCenterTimer = t
+        theaterPollTimer = t
     }
 
-    private func stopOverlayFitTimer() {
-        mediaCenterTimer?.invalidate()
-        mediaCenterTimer = nil
+    private func stopTheaterPoll() {
+        theaterPollTimer?.invalidate()
+        theaterPollTimer = nil
     }
 
     private func pollTheaterMode() {
@@ -554,11 +565,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     private func saveCardSize() {
-        // Content size both ways: `applyThreadSize` restores with
-        // `setContentSize`, and mixing the two drifts by the titlebar's height
-        // on every open.
-        let s = card.contentRect(forFrameRect: card.frame).size
-        UserDefaults.standard.set(["w": s.width, "h": s.height], forKey: Self.sizeKey)
+        Preferences.bubbleCardSize = card.contentRect(forFrameRect: card.frame).size
     }
 
     @objc private func exitBubbleMode() { onExitBubbleMode?() }
@@ -566,29 +573,22 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// Right-click on the app chip. Everything that would otherwise need chrome
     /// glued over the card lives here instead, so the card stays nothing but
     /// the conversation.
-    private func showChipMenu(from view: NSView, at point: NSPoint) {
+    private func showChipMenu() {
         let menu = NSMenu()
         // Bubbles sit at `.screenSaver`; AppKit's default menu window is only
         // `.popUpMenu` (~101) and opens *under* the chain — looks like right-
         // click does nothing. Elevate tracking menus to our overlay tier.
-        menu.delegate = chipMenuLift
+        menu.delegate = ChipMenuLift.shared
 
-        let back = NSMenuItem(title: L.t("Về cửa sổ chính", "Back to the Main Window"),
+        let back = NSMenuItem(title: L.t("Về cửa sổ chính", "Back to Main Window"),
                               action: #selector(exitBubbleMode), keyEquivalent: "")
         back.target = self
         back.image = Self.menuSymbol("macwindow")
         menu.addItem(back)
         menu.addItem(.separator())
 
-        let limits = NSMenu()
-        limits.delegate = chipMenuLift
-        for n in Preferences.bubbleLimitChoices {
-            let item = NSMenuItem(title: "\(n)", action: #selector(pickLimit(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = n
-            item.state = Preferences.bubbleLimit == n ? .on : .off
-            limits.addItem(item)
-        }
+        let limits = Self.bubbleLimitMenu(target: self, action: #selector(pickLimit(_:)))
+        limits.delegate = ChipMenuLift.shared
         let limitItem = NSMenuItem(title: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
                                    action: nil, keyEquivalent: "")
         limitItem.image = Self.menuSymbol("circle.grid.2x2")
@@ -596,13 +596,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         menu.addItem(limitItem)
 
         let sizes = NSMenu()
-        sizes.delegate = chipMenuLift
-        for (label, px) in [(L.t("Nhỏ", "Small"), 38), (L.t("Vừa", "Medium"), 46),
-                            (L.t("Lớn", "Large"), 56), (L.t("Rất lớn", "Extra Large"), 66)] {
-            let item = NSMenuItem(title: label, action: #selector(pickSize(_:)), keyEquivalent: "")
+        sizes.delegate = ChipMenuLift.shared
+        for choice in Preferences.bubbleSizeChoices {
+            let item = NSMenuItem(title: L.t(choice.vi, choice.en),
+                                  action: #selector(pickSize(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = px
-            item.state = Int(Preferences.bubbleSize) == px ? .on : .off
+            item.tag = choice.size
+            item.state = Int(Preferences.bubbleSize) == choice.size ? .on : .off
             sizes.addItem(item)
         }
         let sizeItem = NSMenuItem(title: L.t("Kích thước bong bóng", "Bubble Size"),
@@ -611,27 +611,11 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         sizeItem.submenu = sizes
         menu.addItem(sizeItem)
 
-        let display = NSMenu()
-        display.delegate = chipMenuLift
-        let follow = NSMenuItem(
-            title: L.t("Theo màn hình đang hoạt động", "Follow active display"),
-            action: #selector(pickFollowDisplay(_:)), keyEquivalent: "")
-        follow.target = self
-        follow.tag = 1
-        follow.state = Preferences.bubbleFollowActiveDisplay ? .on : .off
-        follow.image = Self.menuSymbol("arrow.triangle.2.circlepath")
-        display.addItem(follow)
-        let stay = NSMenuItem(
-            title: L.t("Giữ nguyên màn hình hiện tại", "Stay on current display"),
-            action: #selector(pickFollowDisplay(_:)), keyEquivalent: "")
-        stay.target = self
-        stay.tag = 0
-        stay.state = Preferences.bubbleFollowActiveDisplay ? .off : .on
-        stay.image = Self.menuSymbol("pin")
-        display.addItem(stay)
-        let displayItem = NSMenuItem(
-            title: L.t("Vị trí màn hình", "Display placement"),
-            action: nil, keyEquivalent: "")
+        let display = Self.bubbleDisplayMenu(target: self, action: #selector(pickFollowDisplay(_:)),
+                                             withSymbols: true)
+        display.delegate = ChipMenuLift.shared
+        let displayItem = NSMenuItem(title: L.t("Vị trí màn hình", "Display Placement"),
+                                     action: nil, keyEquivalent: "")
         displayItem.image = Self.menuSymbol("display")
         displayItem.submenu = display
         menu.addItem(displayItem)
@@ -656,8 +640,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         anchor.orderOut(nil)
     }
 
-    /// Retained so NSMenu.delegate stays alive for the popUp duration.
-    private let chipMenuLift = ChipMenuLift()
     /// 1×1 host for context menus — must outlive a single popUp call.
     private lazy var chipMenuAnchor: NSPanel = {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 2, height: 2),
@@ -687,7 +669,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// App-chip context menu from a screen-space click (monitor path).
     private var chipMenuShownAt: CFTimeInterval = 0
     private func showAppChipMenu(atScreenPoint point: NSPoint) {
-        guard let panel = bubbles.first, let chip = chip(panel) else { return }
+        guard bubbles.first != nil else { return }
         // Local + global monitors both see the same click — open once.
         let now = CACurrentMediaTime()
         if now - chipMenuShownAt < 0.35 { return }
@@ -695,9 +677,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // Cancel any pending auto-collapse so resignKey from the menu host
         // cannot fold the card while the user is picking.
         collapseWork?.cancel(); collapseWork = nil
-        showChipMenu(from: chip, at: chip.convert(
-            panel.convertFromScreen(NSRect(origin: point, size: .zero)).origin,
-            from: nil))
+        showChipMenu()
     }
 
     /// True when `screenPoint` lands on the app chip's visible circle.
@@ -726,10 +706,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func rebuildChain() {
         let convos = bubbles.dropFirst().compactMap { conversation(of: $0) }
         let head = centres.first ?? savedHeadCentre()
-        bubbles.forEach(retire)
-        bubbles.removeAll()
-        centres.removeAll(); velocities.removeAll()
-        diameters.removeAll(); hoverTargets.removeAll(); born.removeAll()
+        clearChainState()
         anchorIndex = 0
         for (i, convo) in ([nil] + convos.map { Optional($0) }).enumerated() {
             appendBubble(convo, centre: NSPoint(x: head.x, y: head.y - CGFloat(i) * Chain.step))
@@ -765,9 +742,11 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func open(_ convo: BubbleConversation?, toggle: Bool = true) {
         collapseWork?.cancel(); collapseWork = nil
         PlumeTrace.log("\n===== open(\(convo?.name ?? "APP")) =====")
+        #if DEBUG   // the log line is a no-op in release, the loop around it is not
         for (i, sc) in NSScreen.screens.enumerated() {
             PlumeTrace.log("  screen[\(i)] frame=\(PlumeTrace.r(sc.frame)) visible=\(PlumeTrace.r(sc.visibleFrame))")
         }
+        #endif
         PlumeTrace.log("  mouse=\(PlumeTrace.p(NSEvent.mouseLocation)) main=\(PlumeTrace.r(NSScreen.main?.frame ?? .zero))")
         PlumeTrace.log("  panel[0].frame=\(PlumeTrace.r(bubbles.first?.frame ?? .zero)) panel[0].screen=\(PlumeTrace.r(bubbles.first?.screen?.frame ?? .zero))")
         PlumeTrace.log("  lastOpened=\(lastOpenedIndex) panel[i].frame=\(PlumeTrace.r(bubbles.indices.contains(lastOpenedIndex) ? bubbles[lastOpenedIndex].frame : .zero))")
@@ -791,7 +770,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
         if let convo {
             // Promote the opened head to the newest contact slot.
-            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == convo.id }), i != 1 {
+            if let i = headIndex(for: convo.id), i != 1 {
                 moveBubble(from: i, to: 1)
                 lastOpenedIndex = 1
             }
@@ -913,7 +892,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // Already showing it: `open` would read that as "same bubble twice"
         // and fold the card away.
         if isExpanded, card.isVisible, !showingPicker {
-            if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == ThreadURL.id(from: thread) }) {
+            if let i = headIndex(for: ThreadURL.id(from: thread)) {
                 lastOpenedIndex = i
                 wake()
             }
@@ -921,7 +900,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             card.makeKey()
             return
         }
-        if let i = bubbles.firstIndex(where: { conversation(of: $0)?.id == ThreadURL.id(from: thread) }),
+        if let i = headIndex(for: ThreadURL.id(from: thread)),
            let convo = conversation(of: bubbles[i]) {
             lastOpenedIndex = i
             open(convo, toggle: false)
@@ -1024,7 +1003,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             if (try? result.get()) as? Bool == false {
                 PlumeTrace.log("  openThread: no row to click")
                 let shown = ThreadURL.id(from: self.webView.url)
-                if let i = self.bubbles.firstIndex(where: { self.conversation(of: $0)?.id == shown }) {
+                if let i = self.headIndex(for: shown) {
                     self.lastOpenedIndex = i
                     self.wake()
                 }
@@ -1085,9 +1064,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // Look the head up rather than assuming index 1: spawnBubble is a
             // no-op when that contact already has one, and the card would then
             // fold down onto somebody else's bubble.
-            self.lastOpenedIndex = self.bubbles.firstIndex {
-                self.conversation(of: $0)?.id == convo.id
-            } ?? 0
+            self.lastOpenedIndex = self.headIndex(for: convo.id) ?? 0
             self.showThread(convo.url)
         }
         listView.onLoadMore = { [weak self] in self?.loadMorePicker() }
@@ -1095,9 +1072,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             self?.deleteConversation?(convo) { [weak self] deleted in
                 guard let self, deleted else { return }
                 // Its head goes too; index 0 is the app chip and never does.
-                if let i = self.bubbles.firstIndex(where: {
-                    self.conversation(of: $0)?.id == convo.id
-                }), i > 0 {
+                if let i = self.headIndex(for: convo.id), i > 0 {
                     self.adjustIndicesAfterRemoval(i)
                     self.removeBubble(at: i)
                     self.wake()
@@ -1164,7 +1139,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     func collapse() {
         guard isExpanded else { return }
         collapseWork?.cancel(); collapseWork = nil
-        stopOverlayFitTimer()
+        stopTheaterPoll()
         if theaterMode { exitTheaterMode(restore: true) }
         isExpanded = false
         docked = false
@@ -1240,7 +1215,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
         unreadWork?.cancel(); unreadWork = nil
-        stopOverlayFitTimer()
+        stopTheaterPoll()
         docked = false
         hoverFocus = nil
         tether.hide()
@@ -1252,10 +1227,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         collapseWork?.cancel(); collapseWork = nil
         webView.removeFromSuperview()
         card.orderOut(nil)
-        bubbles.forEach(retire)
-        bubbles.removeAll()
-        centres.removeAll(); velocities.removeAll()
-        diameters.removeAll(); hoverTargets.removeAll(); born.removeAll()
+        clearChainState()
     }
 
     /// Re-read where the window server actually put the heads.
@@ -1479,11 +1451,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// no-ops: leaving the card at the picker's width made Messenger collapse
     /// `[role="main"]` to zero height, which is what a black card actually is.
     private func applyThreadSize() {
-        var size = Self.cardSize
-        if let saved = UserDefaults.standard.dictionary(forKey: Self.sizeKey),
-           let w = saved["w"] as? Double, let h = saved["h"] as? Double {
-            size = NSSize(width: w, height: h)
-        }
+        var size = Preferences.bubbleCardSize ?? Self.cardSize
         // Size against the chain's display — `card.screen` still names the old
         // one while the card is ordered out or mid-hop between monitors.
         let visible = hostScreen.visibleFrame
@@ -1501,12 +1469,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     }
 
     private func restoreCardSize() {
-        guard let saved = UserDefaults.standard.dictionary(forKey: Self.sizeKey),
-              let w = saved["w"] as? Double, let h = saved["h"] as? Double
-        else { return }
+        guard let saved = Preferences.bubbleCardSize else { return }
         let visible = hostScreen.visibleFrame
-        let size = NSSize(width: min(max(w, card.minSize.width), visible.width),
-                          height: min(max(h, card.minSize.height), visible.height))
+        let size = NSSize(width: min(max(saved.width, card.minSize.width), visible.width),
+                          height: min(max(saved.height, card.minSize.height), visible.height))
         card.setContentSize(size)
     }
 
@@ -2098,7 +2064,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func recomputeHoverTargets() {
         let p = NSEvent.mouseLocation
         lastHoverMouse = p
-        _ = pickHoverFocus(at: p)   // updates `hoverFocus` itself
+        pickHoverFocus(at: p)
         applyHoverFromFocus()
     }
 
@@ -2142,14 +2108,14 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// Pick the head under the pointer from stable rest probes + Euclidean
     /// distance (with hysteresis). Never called from the display tick — packing
     /// springs must not re-elect the winner.
-    private func pickHoverFocus(at p: NSPoint) -> Int? {
+    private func pickHoverFocus(at p: NSPoint) {
         guard !bubbles.isEmpty, centres.count == bubbles.count else {
             hoverFocus = nil
-            return nil
+            return
         }
         let horizontal = docked
         let probes: [NSPoint] = horizontal ? rowRestSlots() : restCentresForHover()
-        guard !probes.isEmpty else { hoverFocus = nil; return nil }
+        guard !probes.isEmpty else { hoverFocus = nil; return }
 
         // Soft field around the chain so the Dock glow engages before the tip
         // is dead-centre on a head; hard radius still bounds false hits.
@@ -2161,7 +2127,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         guard let nearest = dist.enumerated().min(by: { $0.element < $1.element }),
               nearest.element <= fieldR else {
             hoverFocus = nil
-            return nil
+            return
         }
 
         // Hysteresis: keep focus until another probe is clearly closer.
@@ -2170,10 +2136,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             if nearest.offset != focus, nearest.element < dist[focus] - margin {
                 hoverFocus = nearest.offset
             }
-            return hoverFocus
+            return
         }
         hoverFocus = nearest.offset
-        return hoverFocus
     }
 
     /// Diameter used for chain *spacing* — hover targets, not the animating
@@ -2471,14 +2436,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func saveAnchor() {
         guard let c = centres.first else { return }
-        UserDefaults.standard.set(["x": c.x, "y": c.y], forKey: Self.originKey)
+        Preferences.bubbleOrigin = c
     }
 
     private func savedHeadCentre() -> NSPoint {
         var c: NSPoint
-        if let saved = UserDefaults.standard.dictionary(forKey: Self.originKey),
-           let x = saved["x"] as? Double, let y = saved["y"] as? Double {
-            c = NSPoint(x: x, y: y)
+        if let saved = Preferences.bubbleOrigin {
+            c = saved
         } else {
             let v = (NSScreen.main ?? screen(nearest: .zero)).visibleFrame
             c = NSPoint(x: v.maxX - Chain.canvas / 2 - Chain.margin,
@@ -2502,5 +2466,40 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
                                change: [NSKeyValueChangeKey: Any]?,
                                context: UnsafeMutableRawPointer?) {
         if keyPath == "URL" { scheduleCardFixups() }
+    }
+}
+
+// MARK: - Settings submenus shared with the Window menu
+
+extension ChatBubbleController {
+    /// "Maximum Bubbles". Built here for both the Window menu and the app
+    /// chip's menu, which used to drift apart in choices and wording.
+    static func bubbleLimitMenu(target: AnyObject, action: Selector) -> NSMenu {
+        let menu = NSMenu()
+        for n in Preferences.bubbleLimitChoices {
+            let item = NSMenuItem(title: "\(n)", action: action, keyEquivalent: "")
+            item.target = target
+            item.tag = n
+            item.state = Preferences.bubbleLimit == n ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    /// Follow the active display (tag 1) or stay on the current one (tag 0).
+    static func bubbleDisplayMenu(target: AnyObject, action: Selector,
+                                  withSymbols: Bool = false) -> NSMenu {
+        let menu = NSMenu()
+        let choices = [(1, "Theo màn hình đang hoạt động", "Follow Active Display", "arrow.triangle.2.circlepath"),
+                       (0, "Giữ nguyên màn hình hiện tại", "Stay on Current Display", "pin")]
+        for (tag, vi, en, symbol) in choices {
+            let item = NSMenuItem(title: L.t(vi, en), action: action, keyEquivalent: "")
+            item.target = target
+            item.tag = tag
+            item.state = (tag == 1) == Preferences.bubbleFollowActiveDisplay ? .on : .off
+            if withSymbols { item.image = menuSymbol(symbol) }
+            menu.addItem(item)
+        }
+        return menu
     }
 }

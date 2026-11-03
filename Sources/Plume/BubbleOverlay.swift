@@ -30,6 +30,9 @@ enum PlumeOverlay {
 /// this, `NSMenu.popUp` opens at `.popUpMenu` (~101) and is invisible under
 /// the chain — which looks exactly like "right-click does nothing".
 final class ChipMenuLift: NSObject, NSMenuDelegate {
+    /// NSMenu.delegate is weak; this keeps the one stateless instance alive.
+    static let shared = ChipMenuLift()
+
     func menuWillOpen(_ menu: NSMenu) {
         ChipMenuLift.elevateOpenMenus()
         // Submenus / delayed presentation need another pass next turn.

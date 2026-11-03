@@ -19,7 +19,7 @@ final class BubbleChipView: NSView {
     /// App chip only: a second click leaves bubble mode, and the secondary
     /// button opens the menu that used to be a button glued over the card.
     var onDoubleClick: (() -> Void)?
-    var onSecondaryClick: ((NSPoint) -> Void)?
+    var onSecondaryClick: (() -> Void)?
 
     /// Two views, because a masked layer clips its own shadow: `shadowHost`
     /// casts, `circle` clips. The window's own shadow stays off — it is baked
@@ -201,7 +201,7 @@ final class BubbleChipView: NSView {
     override func mouseDown(with event: NSEvent) {
         // Control-click is a secondary click on macOS (trackpad / older mice).
         if event.modifierFlags.contains(.control), onSecondaryClick != nil {
-            onSecondaryClick?(convert(event.locationInWindow, from: nil))
+            onSecondaryClick?()
             return
         }
         downAt = NSEvent.mouseLocation

@@ -213,9 +213,14 @@ final class WebViewController: NSViewController {
         return Int(inside) ?? 0
     }
 
+    /// Dock and app-chip badge text: nothing at zero, capped at "99+".
+    static func badgeLabel(_ count: Int) -> String? {
+        count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+    }
+
     // Called on the main thread (from title KVO); no dispatch needed.
     private func setBadge(_ count: Int) {
-        NSApp.dockTile.badgeLabel = count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+        NSApp.dockTile.badgeLabel = Self.badgeLabel(count)
         // The chat bubble badges itself from this instead of watching the DOM.
         NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,
                                         userInfo: ["count": count])
@@ -293,11 +298,7 @@ final class WebViewController: NSViewController {
         else { return }
         pendingRowDelete = (url, body["name"] as? String ?? "")
         let menu = NSMenu()
-        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
-                              action: #selector(deleteFromRowMenu), keyEquivalent: "")
-        item.target = self
-        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-        menu.addItem(item)
+        menu.addItem(.deleteChat(target: self, action: #selector(deleteFromRowMenu)))
         menu.popUp(positioning: nil,
                    at: webView.convert(window.mouseLocationOutsideOfEventStream, from: nil),
                    in: webView)
@@ -833,6 +834,18 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         case "rowMenu":     controller?.handleRowMenu(body)
         default: break
         }
+    }
+}
+
+extension NSMenuItem {
+    /// "Delete Chat…" with a trash icon: the row menus of Messenger's sidebar
+    /// and of the bubble picker.
+    static func deleteChat(target: AnyObject, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
+                              action: action, keyEquivalent: "")
+        item.target = target
+        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        return item
     }
 }
 
