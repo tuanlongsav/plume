@@ -12,9 +12,10 @@ file from Claude; Gemini CLI reads it through `.gemini/settings.json`.
 ## Project
 
 A native macOS client for Facebook Messenger: `messenger.com` inside the
-system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer
-and an Android-style "chat heads" bubble mode. Pure Swift + AppKit, no runtime
-dependencies.
+system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
+an Android-style "chat heads" bubble mode and a self-updater fed by GitHub
+Releases. Pure Swift + AppKit, no runtime dependencies (the updater uses only
+CryptoKit and Security, which ship with macOS).
 
 - SwiftPM, `swift-tools-version:6.0`, but **Swift 5 language mode**
   (`.swiftLanguageMode(.v5)`): strict concurrency checking is off.
@@ -29,12 +30,17 @@ dependencies.
 | Unit tests | `swift test` |
 | Build the `.app` | `bash Scripts/build_app.sh release` → `build/Plume.app` (`debug` also works) |
 | Build and install/update in `/Applications` | `bash Scripts/install.sh` |
-| Developer ID signed + notarized DMG | `bash Scripts/release_sign.sh` (needs the cert and the `vkey` notarytool profile) |
+| Developer ID signed + notarized `Plume-X.Y.dmg` and updater `Plume-X.Y.zip` | `bash Scripts/release_sign.sh X.Y` (needs the cert and the `vkey` notarytool profile) |
+| Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y` (`--no-publish` for a dry run); steps in `docs/RELEASE.md` |
+| Update-signing key / signatures | `swift Scripts/update_sign.swift keygen\|pubkey\|sign\|verify …` |
 | Regenerate the icon | `bash Scripts/make_icon.sh` (`build_app.sh` runs it when `Resources/Plume.icns` is missing; the `.icns` is generated, not committed) |
 
 Environment knobs: `PLUME_UNIVERSAL=1` (arm64 + x86_64), `PLUME_SIGN_IDENTITY`
 (Developer ID instead of ad-hoc), `PLUME_INSTALL_DIR` (default `/Applications`),
-`PLUME_NOTARY_PROFILE` (notarytool keychain profile, default `vkey`).
+`PLUME_NOTARY_PROFILE` (notarytool keychain profile, default `vkey`),
+`PLUME_VERSION` (`MAJOR.MINOR`; unset means `0.0.0`, a local build the updater
+never replaces), `PLUME_UPDATE_KEY` (path of the Ed25519 private key),
+`PLUME_RELEASE_REPO` (default `tuanlongsav/plume`).
 
 CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test` and
 `bash Scripts/build_app.sh release` on every push and pull request, and keeps
@@ -60,6 +66,10 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `ChromeToolbar.swift`, `StateOverlays.swift`, `FeatherView.swift` | Native toolbar, loading/offline/splash overlays, logo |
 | `PDFViewerWindowController.swift` | In-app PDF viewer for attachments |
 | `PopupWindowController.swift` | Real windows for `window.open` (calls start on `about:blank`) |
+| `Updater.swift` | Self-update: GitHub check, download, verification, atomic swap, relaunch; progress panel |
+| `AppVersion.swift`, `UpdateFeed.swift`, `UpdateVerifier.swift` | Pure updater logic (version order, release selection, daily throttle, manifest + Ed25519 checks), unit-tested |
+| `UpdateKeys.swift` | The embedded Ed25519 public key for update archives |
+| `CHANGELOG.md`, `docs/RELEASE.md` | Release notes shown in the update prompt; the release procedure (Vietnamese) |
 | `Tests/PlumeTests/` | XCTest; JS that needs no DOM is run in `JavaScriptCore` |
 
 ## Rules that are easy to break
@@ -96,7 +106,13 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
    message text or cursor positions to disk in release builds. Conversation
    snapshots never leave the machine.
 9. **User-facing strings are bilingual**: `L.t("Tiếng Việt", "English")`.
-10. **Put logic where it can be tested.** Prefer small pure types
+10. **Updates.** Never change `UpdateKeys.publicKeyBase64` without the
+    rotation steps in `docs/RELEASE.md`: installed copies trust only the key
+    they embed. Never rebuild or re-upload a version that is already published
+    (new bytes, new signature). The update check sends nothing but a
+    User-Agent, at most once a day, and runs no timer. `0.0.0`, ad-hoc and
+    translocated copies never update themselves.
+11. **Put logic where it can be tested.** Prefer small pure types
     (`ThreadURL`, `BubbleChainSync`, `DisplayHop`, `Chain.dockedRowXs`) with
     tests in `Tests/PlumeTests`, over logic buried in AppKit code.
 
