@@ -23,6 +23,21 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Script syntax
+        run: for f in Scripts/*.sh; do bash -n "$f"; done
+
+      - name: Update signing round trip
+        # A throwaway key: proves update_sign.swift compiles and that what it
+        # signs, it verifies. The real key never leaves the maintainer's Mac.
+        run: |
+          T="$(mktemp -d)"
+          PUB="$(swift Scripts/update_sign.swift keygen "$T/k.pem")"
+          head -c 100000 /dev/urandom > "$T/payload"
+          SIG="$(swift Scripts/update_sign.swift sign "$T/k.pem" "$T/payload")"
+          swift Scripts/update_sign.swift verify "$PUB" "$T/payload" "$SIG"
+          printf x >> "$T/payload"
+          ! swift Scripts/update_sign.swift verify "$PUB" "$T/payload" "$SIG"
+
       - name: Unit tests
         run: swift test
 

@@ -14,6 +14,21 @@ UNIVERSAL="${PLUME_UNIVERSAL:-0}"
 # notarization requires. Empty means ad-hoc, which is fine locally and useless
 # for anything that leaves this machine.
 SIGN_IDENTITY="${PLUME_SIGN_IDENTITY:-}"
+# PLUME_VERSION=MAJOR.MINOR stamps a release (Scripts/release.sh sets it).
+# 0.0.0 marks a local build, which the in-app updater never replaces.
+VERSION="${PLUME_VERSION:-0.0.0}"
+if [[ "$VERSION" == "0.0.0" ]]; then
+    BUILD=1
+elif [[ "$VERSION" =~ ^([1-9][0-9]*|0)\.([1-9]?[0-9])$ ]]; then
+    # Same scheme as vkey: strictly increasing and derived from the version
+    # alone, so it does not depend on how much git history a clone has.
+    # No leading zeros (bash reads 08 as octal) and MINOR ≤ 99, so builds
+    # never overlap between majors.
+    BUILD=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 ))
+else
+    echo "PLUME_VERSION must be MAJOR.MINOR, no leading zeros, MINOR ≤ 99 (got: $VERSION)" >&2
+    exit 1
+fi
 APP_NAME="Plume"
 BUNDLE_ID="com.htl.plume"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,9 +37,9 @@ APP="$ROOT/build/$APP_NAME.app"
 ARCH_ARGS=()
 if [[ "$UNIVERSAL" == "1" ]]; then
     ARCH_ARGS=(--arch arm64 --arch x86_64)
-    echo "▸ swift build ($CONFIG, universal arm64 + x86_64)…"
+    echo "▸ swift build ($CONFIG, $VERSION, universal arm64 + x86_64)…"
 else
-    echo "▸ swift build ($CONFIG)…"
+    echo "▸ swift build ($CONFIG, $VERSION)…"
 fi
 cd "$ROOT"
 swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}
@@ -60,8 +75,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>        <string>Plume</string>
     <key>CFBundleIconName</key>        <string>Plume</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.1.0</string>
-    <key>CFBundleVersion</key>         <string>1</string>
+    <key>CFBundleShortVersionString</key> <string>$VERSION</string>
+    <key>CFBundleVersion</key>         <string>$BUILD</string>
     <key>LSMinimumSystemVersion</key>  <string>14.0</string>
     <key>NSHighResolutionCapable</key> <true/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
