@@ -29,7 +29,7 @@ CryptoKit and Security, which ship with macOS).
 |---|---|
 | Unit tests | `swift test` |
 | Build the `.app` | `bash Scripts/build_app.sh release` → `build/Plume.app` (`debug` also works) |
-| Build and install/update in `/Applications` | `bash Scripts/install.sh` |
+| Build and install/update in `/Applications` | `bash Scripts/install.sh` (a local `0.0.0` build; refuses to replace an installed release unless `PLUME_REPLACE_RELEASE=1`) |
 | Developer ID signed + notarized `Plume-X.Y.dmg` and updater `Plume-X.Y.zip` | `bash Scripts/release_sign.sh X.Y` (needs the cert and the `vkey` notarytool profile) |
 | Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y` (`--no-publish` for a dry run); steps in `docs/RELEASE.md` |
 | Update-signing key / signatures | `swift Scripts/update_sign.swift keygen\|pubkey\|sign\|verify …` |
@@ -40,11 +40,14 @@ Environment knobs: `PLUME_UNIVERSAL=1` (arm64 + x86_64), `PLUME_SIGN_IDENTITY`
 `PLUME_NOTARY_PROFILE` (notarytool keychain profile, default `vkey`),
 `PLUME_VERSION` (`MAJOR.MINOR`; unset means `0.0.0`, a local build the updater
 never replaces), `PLUME_UPDATE_KEY` (path of the Ed25519 private key),
-`PLUME_RELEASE_REPO` (default `tuanlongsav/plume`).
+`PLUME_RELEASE_REPO` (default `tuanlongsav/plume`; any other repo is a test
+run that does not tag origin), `PLUME_REPLACE_RELEASE=1` (let `install.sh`
+replace an installed release).
 
-CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test` and
-`bash Scripts/build_app.sh release` on every push and pull request, and keeps
-the zipped `.app` as a run artifact. It is a backstop, not a substitute: before
+CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test`, a
+stamped release build, the update-signing and bundle-swap round trips and a
+bash 3.2 syntax check on every pull request and every push to `main`. It is a
+backstop, not a substitute: before
 calling a change done, run `swift test` and a release build locally. From a
 non-macOS machine, push and read the CI result instead of claiming it builds.
 Debug builds set `WKWebView.isInspectable`, so Safari ▸ Develop can attach to

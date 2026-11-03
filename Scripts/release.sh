@@ -23,7 +23,12 @@ set -euo pipefail
 
 # In iCloud Drive, so every Mac that releases signs with the same key.
 KEY="${PLUME_UPDATE_KEY:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/Plume/plume_update_key.pem}"
-REPO="${PLUME_RELEASE_REPO:-tuanlongsav/plume}"
+DEFAULT_REPO="tuanlongsav/plume"
+REPO="${PLUME_RELEASE_REPO:-$DEFAULT_REPO}"
+# A dry run against a test repository must not tag the real one: the tag
+# would block the real release of that version.
+TAG_ORIGIN=1
+[[ "$REPO" == "$DEFAULT_REPO" ]] || TAG_ORIGIN=0
 
 VERSION=""
 SKIP_NOTARIZE=0
@@ -34,7 +39,7 @@ while [[ $# -gt 0 ]]; do
         --skip-notarize) SKIP_NOTARIZE=1; PUBLISH=0; shift ;;
         --no-publish)    PUBLISH=0; shift ;;
         --rotating-key)  ROTATING=1; shift ;;
-        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
         -*) echo "Unknown argument: $1" >&2; exit 1 ;;
         *)
             [[ -z "$VERSION" ]] || { echo "Unexpected argument: $1" >&2; exit 1; }
@@ -49,6 +54,8 @@ die()  { echo "FAIL: $1" >&2; exit 1; }
 # Same rule as build_app.sh, checked here so preflight fails before a build.
 [[ "$VERSION" =~ ^([1-9][0-9]*|0)\.([1-9]?[0-9])$ ]] \
     || die "version must be MAJOR.MINOR, no leading zeros, MINOR ≤ 99 (got: $VERSION)"
+# 0.0 is what local builds report; the updater treats it as a dev build.
+[[ "$VERSION" != "0.0" ]] || die "0.0 is reserved for local builds."
 TAG="v$VERSION"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,17 +69,46 @@ NOTES="$ROOT/build/notes-$VERSION.md"
 
 step "Preflight"
 [[ -f "$KEY" ]] || die "signing key not found: $KEY (set PLUME_UPDATE_KEY)"
+case "$(cd "$(dirname "$KEY")" && pwd)/" in
+    "$ROOT"/*) die "the signing key is inside the repository ($KEY): one git clean deletes it. Keep it outside." ;;
+esac
 PUB="$("${SIGN_TOOL[@]}" pubkey "$KEY")"
-# The app only accepts archives signed by the key it embeds. Publishing with
-# any other key would ship an update every existing install rejects.
-if grep -qF "publicKeyBase64 = \"$PUB\"" Sources/Plume/UpdateKeys.swift; then
+
+# Tags on origin decide what "newer" means and which key installs trust;
+# local tags may be stale.
+if ! git fetch -q --tags origin; then
+    [[ "$PUBLISH" -eq 0 ]] || die "cannot fetch tags from origin."
+    echo "WARNING: offline — comparing against local tags only." >&2
+fi
+LATEST="$(git tag -l 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+$' \
+    | sort -t. -k1,1n -k2,2n | tail -1 || true)"
+if [[ -n "$LATEST" ]]; then
+    TOP="$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -t. -k1,1n -k2,2n | tail -1)"
+    [[ "$TOP" == "$VERSION" && "$LATEST" != "$VERSION" ]] \
+        || die "$VERSION is not newer than the latest tag v$LATEST."
+fi
+
+# The app only accepts archives signed by the key it embeds, so the key that
+# matters is the one in the LATEST RELEASE, which is what installs run. HEAD
+# may embed a new key only in a rotation release (docs/RELEASE.md).
+embedded_key() { sed -n 's/.*publicKeyBase64 = "\([^"]*\)".*/\1/p'; }
+HEAD_KEY="$(embedded_key < Sources/Plume/UpdateKeys.swift)"
+[[ -n "$HEAD_KEY" ]] || die "UpdateKeys.swift embeds no key: this build could never update itself."
+TRUSTED=""
+if [[ -n "$LATEST" ]]; then
+    TRUSTED="$(git show "v$LATEST:Sources/Plume/UpdateKeys.swift" 2>/dev/null | embedded_key || true)"
+fi
+[[ -n "$TRUSTED" ]] || TRUSTED="$HEAD_KEY"   # first release with a key
+[[ "$PUB" == "$TRUSTED" ]] \
+    || die "this key ($PUB) is not the one installed copies trust ($TRUSTED)."
+if [[ "$HEAD_KEY" == "$TRUSTED" ]]; then
     [[ "$ROTATING" -eq 0 ]] \
-        || die "--rotating-key, but UpdateKeys.swift already embeds the signing key: nothing is rotating."
+        || die "--rotating-key, but HEAD embeds the key installs already trust: nothing is rotating."
 elif [[ "$ROTATING" -eq 1 ]]; then
-    echo "WARNING: key rotation release — signed with the old key ($PUB)," >&2
-    echo "         shipping the new key in UpdateKeys.swift." >&2
+    echo "WARNING: key rotation release — signed with the trusted key ($PUB)," >&2
+    echo "         shipping the new key $HEAD_KEY in UpdateKeys.swift." >&2
 else
-    die "Sources/Plume/UpdateKeys.swift does not embed this key's public half ($PUB)."
+    die "UpdateKeys.swift embeds a different key from v$LATEST; that is a rotation (--rotating-key)."
 fi
 
 mkdir -p build
@@ -84,22 +120,16 @@ awk -v head="## $VERSION" '
 ' CHANGELOG.md > "$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || die "CHANGELOG.md has no '## $VERSION' section with text under it."
 
-LATEST="$(git tag -l 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+$' \
-    | sort -t. -k1,1n -k2,2n | tail -1 || true)"
-if [[ -n "$LATEST" ]]; then
-    TOP="$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -t. -k1,1n -k2,2n | tail -1)"
-    [[ "$TOP" == "$VERSION" && "$LATEST" != "$VERSION" ]] \
-        || die "$VERSION is not newer than the latest tag v$LATEST."
-fi
-
 if [[ "$PUBLISH" -eq 1 ]]; then
     [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean."
     [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || die "not on main."
     git fetch -q origin main
     [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
         || die "main is not the same commit as origin/main — pull or push first."
-    [[ -z "$(git tag -l "$TAG")" ]] || die "tag $TAG already exists locally."
-    [[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ]] || die "tag $TAG already exists on origin."
+    if [[ "$TAG_ORIGIN" -eq 1 ]]; then
+        [[ -z "$(git tag -l "$TAG")" ]] || die "tag $TAG already exists locally."
+        [[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ]] || die "tag $TAG already exists on origin."
+    fi
     gh auth status >/dev/null 2>&1 || die "gh is not logged in (gh auth login)."
     if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
         die "release $TAG already exists on $REPO."
@@ -146,8 +176,12 @@ if [[ "$PUBLISH" -eq 0 ]]; then
 fi
 
 step "Tag + publish"
-git tag -a "$TAG" -m "Plume $VERSION"
-git push origin "$TAG"
+if [[ "$TAG_ORIGIN" -eq 1 ]]; then
+    git tag -a "$TAG" -m "Plume $VERSION"
+    git push origin "$TAG"
+else
+    echo "Test repository $REPO: not tagging origin; gh creates $TAG there."
+fi
 if ! gh release create "$TAG" -R "$REPO" --title "Plume $VERSION" --notes-file "$NOTES" \
         "$DMG" "$ZIP" "$MANIFEST"; then
     # The tag is already public. Retry the upload with the SAME files rather

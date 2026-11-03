@@ -10,7 +10,9 @@
 //
 // Shell has no atomic swap on macOS (BSD mv has no --exchange), and an
 // `rm -rf old; mv new old` pair leaves no app at all if interrupted between
-// the two. The in-app updater swaps the same way (Updater.swap).
+// the two. The in-app updater uses the same RENAME_SWAP (Updater.swap); its
+// fallback for file systems without it differs (replaceItemAt there, two
+// renames with a restore here).
 import Foundation
 
 func fail(_ message: String) -> Never {

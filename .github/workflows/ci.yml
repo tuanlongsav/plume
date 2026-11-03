@@ -1,9 +1,15 @@
 name: CI
 
+# Branch pushes run through their pull request, so each change runs once;
+# release tags need no run of their own.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,7 +30,8 @@ jobs:
           swift --version
 
       - name: Script syntax
-        run: for f in Scripts/*.sh; do bash -n "$f"; done
+        # /bin/bash is the 3.2 that ships with macOS, which the scripts target.
+        run: for f in Scripts/*.sh; do /bin/bash -n "$f"; done
 
       - name: Update signing round trip
         # A throwaway key: proves update_sign.swift compiles and that what it
@@ -55,13 +62,8 @@ jobs:
         run: swift test
 
       - name: Release build
-        run: bash Scripts/build_app.sh release
-
-      - name: Package app
-        run: ditto -c -k --keepParent build/Plume.app build/Plume.zip
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Plume-${{ github.sha }}
-          path: build/Plume.zip
-          retention-days: 7
+        # A stamped version exercises the version rule; the build number must
+        # be MAJOR*10000 + MINOR*100, the same rule AppVersionTests pins.
+        run: |
+          PLUME_VERSION=1.2 bash Scripts/build_app.sh release
+          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' build/Plume.app/Contents/Info.plist)" = 10200 ]
