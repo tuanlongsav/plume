@@ -17,12 +17,27 @@ nhưng không dùng Sparkle, không có `appcast.xml`: app đọc thẳng
 
 ## 2. Khoá ký gói cập nhật (làm một lần)
 
-Khoá Ed25519 riêng cho updater, khác chứng thư Developer ID.
+Khoá Ed25519 riêng cho updater, khác chứng thư Developer ID. Khoá nằm trong
+iCloud Drive (`iCloud Drive/Plume/`) để mọi máy Mac dùng để phát hành (Mac
+Studio, MacBook…) ký bằng cùng một khoá; đó cũng là đường dẫn mặc định của
+`release.sh`. Tạo **một lần, trên một máy**:
 
 ```bash
-mkdir -p /Volumes/DATA/Claude/plume
-swift Scripts/update_sign.swift keygen /Volumes/DATA/Claude/plume/plume_update_key.pem
+ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
+mkdir -p "$ICLOUD/Plume"
+swift Scripts/update_sign.swift keygen "$ICLOUD/Plume/plume_update_key.pem"
 ```
+
+Máy khác chỉ cần đợi iCloud đồng bộ file đó rồi kiểm tra in ra **cùng** public key:
+
+```bash
+swift Scripts/update_sign.swift pubkey "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Plume/plume_update_key.pem"
+```
+
+Bảo vệ khoá: ai có file này ký được bản cập nhật mà mọi máy đã cài Plume sẽ
+chấp nhận (dù app trong gói vẫn phải ký Developer ID của anh). Bật **Advanced
+Data Protection** cho iCloud để file được mã hoá đầu-cuối, và đừng chia sẻ thư
+mục `Plume` trong iCloud Drive với ai.
 
 Lệnh in ra public key (base64, 32 byte). Dán vào
 `Sources/Plume/UpdateKeys.swift`:
@@ -34,8 +49,9 @@ static let publicKeyBase64 = "<giá trị vừa in>"
 Commit dòng đó. Khi `publicKeyBase64` còn rỗng, updater tắt hẳn.
 
 - **Không bao giờ** commit file `.pem` (`.gitignore` đã chặn `*.pem`, `*.key`).
-- Backup file khoá ra nơi an toàn. Mất khoá = mọi bản đã cài không nhận bản mới
-  nữa; người dùng phải tải DMG cài tay.
+- Ngoài iCloud, giữ thêm một bản backup ngoại tuyến (USB mã hoá, password
+  manager). Xoá nhầm trong iCloud sẽ xoá trên mọi máy. Mất khoá = mọi bản đã
+  cài không nhận bản mới nữa; người dùng phải tải DMG cài tay.
 - In lại public key: `swift Scripts/update_sign.swift pubkey <file.pem>`.
 - Đường dẫn khác: đặt `PLUME_UPDATE_KEY=/đường/dẫn/khoá.pem`.
 

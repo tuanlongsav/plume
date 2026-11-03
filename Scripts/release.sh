@@ -21,7 +21,8 @@
 # signature, and the manifest already on GitHub would no longer match.
 set -euo pipefail
 
-KEY="${PLUME_UPDATE_KEY:-/Volumes/DATA/Claude/plume/plume_update_key.pem}"
+# In iCloud Drive, so every Mac that releases signs with the same key.
+KEY="${PLUME_UPDATE_KEY:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/Plume/plume_update_key.pem}"
 REPO="${PLUME_RELEASE_REPO:-tuanlongsav/plume}"
 
 VERSION=""
