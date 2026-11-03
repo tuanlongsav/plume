@@ -6,6 +6,20 @@ import Foundation
 /// (so they look and behave like a real app, and survive the page being
 /// in the background), and lets a native click reopen the right thread.
 enum InjectedScript {
+    /// Accent-folded, whitespace-collapsed, lower-cased text, so a label
+    /// matches whether Messenger renders it in Vietnamese or English. đ/Đ
+    /// (U+0111/U+0110) have no canonical decomposition, so NFD leaves them
+    /// intact and they are folded by hand. Spliced into each script that
+    /// needs it: those run in separate scopes and some are tested standalone.
+    static let normJS = #"""
+    function norm(s) {
+        s = String(s || "");
+        try { s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (e) {}
+        return s.replace(/[\u0111\u0110]/g, "d")
+            .replace(/\s+/g, " ").trim().toLowerCase();
+    }
+    """#
+
     /// Shared theatre detector. Photo/video lightbox only — not emoji,
     /// sticker, GIF or reaction pickers. Those are also `role="dialog"` and
     /// used to trip the greedy size check, which expanded the card to fill
@@ -20,14 +34,7 @@ enum InjectedScript {
         var smallImgs = Number(info.smallImgs) || 0;
         if (W < 200 || H < 200) return false;
 
-        function norm(s) {
-            s = String(s || "");
-            try {
-                s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            } catch (e) {}
-            return s.replace(/[\u0111\u0110]/g, "d")
-                .replace(/\s+/g, " ").trim().toLowerCase();
-        }
+        \#(InjectedScript.normJS)
         function hasPhrase(n, phrase) {
             var p = n.indexOf(phrase);
             if (p < 0) return false;
@@ -153,12 +160,7 @@ enum InjectedScript {
     /// destructive flow must never click something that merely looks close.
     static let deleteMatchJS = #"""
     (function (g) {
-        function norm(s) {
-            s = String(s || "");
-            try { s = s.normalize("NFD").replace(/[̀-ͯ]/g, ""); } catch (e) {}
-            return s.replace(/[đĐ]/g, "d")
-                .replace(/\s+/g, " ").trim().toLowerCase();
-        }
+        \#(InjectedScript.normJS)
         var DELETE = ["delete chat", "xoa doan chat",
                       "delete conversation", "xoa cuoc tro chuyen"];
         g.__plumeDeleteMatch = {
@@ -469,14 +471,7 @@ enum InjectedScript {
         window.__plumeHideSkipLinks = function () {
             var phrases = ["chuyen den noi dung chinh", "skip to main content",
                            "chuyen toi noi dung chinh"];
-            function norm(s) {
-                // đ/Đ (U+0111/U+0110) have NO canonical decomposition, so NFD
-                // leaves them intact and a plain-ASCII phrase list never
-                // matched the Vietnamese label. Fold them by hand.
-                return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-                    .replace(/[\u0111\u0110]/g, "d")
-                    .replace(/\s+/g, " ").trim().toLowerCase();
-            }
+            \#(InjectedScript.normJS)
             var n = 0;
             try {
                 var links = document.querySelectorAll('a[href^="#"], a[href=""], [role="link"][href^="#"]');
@@ -704,11 +699,7 @@ enum InjectedScript {
                 "new message", "new messages", "xem tin nhan moi",
                 "xem tin nhắn mới", "nhay den hien tai", "nhảy đến hiện tại"
             ];
-            function norm(s) {
-                return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
-                    .replace(/[đĐ]/g, "d")
-                    .replace(/\s+/g, " ").trim().toLowerCase();
-            }
+            \#(InjectedScript.normJS)
             var jumped = false;
             var controls = main.querySelectorAll('[role="button"], button, a[role="link"]');
             for (var c = 0; c < controls.length; c++) {

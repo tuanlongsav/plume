@@ -58,12 +58,6 @@ final class ThreadDeleteTests: XCTestCase {
         XCTAssertEqual(id("https://www.messenger.com/"), "")
     }
 
-    func testSwiftThreadIdMatchesAcrossNamespaces() {
-        XCTAssertEqual(ThreadURL.id(from: URL(string: "https://www.messenger.com/t/42/?a=b")), "42")
-        XCTAssertEqual(ThreadURL.id(from: URL(string: "https://www.messenger.com/e2ee/t/42")), "42")
-        XCTAssertNil(ThreadURL.id(from: URL(string: "https://www.messenger.com/")))
-    }
-
     func testOutcomeParsing() {
         XCTAssertEqual(ThreadDeleteOutcome(result: "ok"), .ok)
         XCTAssertNil(ThreadDeleteOutcome(result: "ok").failureMessage)

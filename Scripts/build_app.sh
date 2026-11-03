@@ -40,12 +40,13 @@ if [[ "$CONFIG" == "release" ]]; then
     strip -x "$APP/Contents/MacOS/$APP_NAME"
 fi
 
+# The .icns is generated, not committed: it is 1.2 MB of pixels that
+# Scripts/icon_gen.swift reproduces exactly. Rendered once, then reused.
 ICON_SRC="$ROOT/Resources/Plume.icns"
-if [[ -f "$ICON_SRC" ]]; then
-    cp "$ICON_SRC" "$APP/Contents/Resources/Plume.icns"
-else
-    echo "  (no Resources/Plume.icns — run Scripts/make_icon.sh to generate it)"
+if [[ ! -f "$ICON_SRC" ]]; then
+    bash "$ROOT/Scripts/make_icon.sh"
 fi
+cp "$ICON_SRC" "$APP/Contents/Resources/Plume.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

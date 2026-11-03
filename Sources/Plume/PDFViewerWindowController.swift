@@ -1,6 +1,5 @@
 import AppKit
-import PDFKit   // On macOS 14 you can import PDFKit directly; `import Quartz`
-                // (the umbrella) also works but pulls in ImageKit/QuickLookUI too.
+import PDFKit
 
 /// PDFView that opens the in-window find bar on Cmd+F. Handling the key
 /// equivalent locally — rather than via a global Edit▸Find menu item — keeps
@@ -37,7 +36,7 @@ private final class FindBarStack: NSStackView {
 ///
 ///     PDFViewerWindowController.open(fileURL)
 ///
-/// The controller keeps itself alive (see `Registry`) so the caller does not
+/// The controller keeps itself alive (see `registry`) so the caller does not
 /// have to hold a reference; it releases on `windowWillClose`.
 final class PDFViewerWindowController: NSWindowController {
 
@@ -283,7 +282,7 @@ final class PDFViewerWindowController: NSWindowController {
 
     // MARK: - Actions: Reveal in Finder
 
-    @objc private func revealInFinder(_ sender: Any? = nil) {
+    @objc private func revealInFinder(_ sender: Any?) {
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
@@ -360,7 +359,6 @@ final class PDFViewerWindowController: NSWindowController {
 
 extension PDFViewerWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        NotificationCenter.default.removeObserver(self)
         // Drop our self-reference so ARC can deallocate the controller (and the
         // window it owns). This is what prevents the leak.
         Self.registry.removeAll { $0 === self }

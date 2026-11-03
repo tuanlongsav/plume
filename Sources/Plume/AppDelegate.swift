@@ -396,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let limitItem = windowMenu.addItem(withTitle: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
                                            action: nil, keyEquivalent: "")
         let limitMenu = NSMenu()
-        for n in [3, 5, 8] {
+        for n in Preferences.bubbleLimitChoices {
             let it = limitMenu.addItem(withTitle: "\(n)", action: #selector(setBubbleLimit(_:)),
                                        keyEquivalent: "")
             it.tag = n
