@@ -38,6 +38,19 @@ jobs:
           printf x >> "$T/payload"
           ! swift Scripts/update_sign.swift verify "$PUB" "$T/payload" "$SIG"
 
+      - name: Atomic bundle swap
+        # What install.sh relies on: an existing app is exchanged, the old one
+        # ends up at the staged path, and a first install is a plain rename.
+        run: |
+          T="$(mktemp -d)"
+          mkdir -p "$T/new.app" "$T/cur.app"
+          echo new > "$T/new.app/v"; echo old > "$T/cur.app/v"
+          swift Scripts/swap_bundle.swift "$T/new.app" "$T/cur.app"
+          [ "$(cat "$T/cur.app/v")" = new ] && [ "$(cat "$T/new.app/v")" = old ]
+          mkdir -p "$T/fresh.app"; echo fresh > "$T/fresh.app/v"
+          swift Scripts/swap_bundle.swift "$T/fresh.app" "$T/absent.app"
+          [ "$(cat "$T/absent.app/v")" = fresh ] && [ ! -e "$T/fresh.app" ]
+
       - name: Unit tests
         run: swift test
 

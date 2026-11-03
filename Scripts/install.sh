@@ -31,12 +31,15 @@ if running; then
 fi
 
 echo "▸ installing → $DEST …"
-# Copy beside the old app first, so a failed copy never leaves you with none.
+# Copy beside the old app first (same volume), so a failed copy never leaves
+# you with none, then exchange the two in one atomic rename: `rm -rf; mv` left
+# no app at all if interrupted between the two. After the swap, $STAGED holds
+# the old app.
 STAGED="$DEST_DIR/.Plume.app.new"
-rm -rf "$STAGED"
+rm -rf "$STAGED" "$STAGED.old"
 ditto "$APP_SRC" "$STAGED"
-rm -rf "$DEST"
-mv "$STAGED" "$DEST"
+swift "$ROOT/Scripts/swap_bundle.swift" "$STAGED" "$DEST"
+rm -rf "$STAGED"
 # A local build carries no quarantine flag, but an older copy dragged in from
 # the DMG may have left one behind; clearing it is harmless either way.
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
