@@ -1854,11 +1854,13 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // Docked row: packing already owns X and the baseline owns Y growth.
             // Do NOT also edge-bias the panel — that slid the hit circle away from
             // the model centre and made the app chip unreachable under zoom.
+            // Once per head per frame: each lookup walks NSScreen.screens.
+            let destScreen = screen(nearest: centres[i])
             let visualX: CGFloat
             if docked {
                 visualX = centres[i].x
             } else {
-                let mid = screen(nearest: centres[i]).frame.midX
+                let mid = destScreen.frame.midX
                 visualX = centres[i].x >= mid
                     ? centres[i].x + (Chain.base - d) / 2
                     : centres[i].x + (d - Chain.base) / 2
@@ -1870,7 +1872,6 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             let snapped = NSPoint(x: (o.x * scale).rounded() / scale,
                                   y: (o.y * scale).rounded() / scale)
             let dest = NSRect(origin: snapped, size: panel.frame.size)
-            let destScreen = screen(nearest: centres[i])
             // Crossing displays: setFrameOrigin alone can leave the panel's
             // screen association on the old monitor. setFrame forces the hop.
             if panel.screen !== destScreen {
@@ -2465,7 +2466,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     override func observeValue(forKeyPath keyPath: String?, of object: Any?,
                                change: [NSKeyValueChangeKey: Any]?,
                                context: UnsafeMutableRawPointer?) {
-        if keyPath == "URL" { scheduleCardFixups() }
+        // Folded away, nothing shows; opening the card runs `settleCard`,
+        // which schedules the same ladder.
+        if keyPath == "URL", isExpanded { scheduleCardFixups() }
     }
 }
 

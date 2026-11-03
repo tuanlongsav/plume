@@ -157,11 +157,15 @@ final class ProgressBar: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         segment.frame = CGRect(x: 0, y: 0, width: bounds.width * 0.3, height: bounds.height)
         CATransaction.commit()
-        // (Re)bind the animation to the current width once we actually have one.
+        // (Re)bind the animation to the current width once we actually have
+        // one. Only when it changed: layout passes are frequent, and each
+        // restart would jump the bar back to its start.
+        guard bounds.width != animatedWidth else { return }
         restart()
     }
+    private var animatedWidth: CGFloat = -1
     func start() { running = true; restart() }
-    func stop() { running = false; segment.removeAnimation(forKey: "progress") }
+    func stop() { running = false; animatedWidth = -1; segment.removeAnimation(forKey: "progress") }
 
     /// Animation values depend on the laid-out width, so this is a no-op until
     /// `bounds.width > 0`; `layout()` calls it again once that holds.
@@ -176,6 +180,7 @@ final class ProgressBar: NSView {
         anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         anim.repeatCount = .infinity
         segment.add(anim, forKey: "progress")
+        animatedWidth = w
     }
 }
 
