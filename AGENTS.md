@@ -119,7 +119,10 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
     rotation steps in `docs/RELEASE.md`: installed copies trust only the key
     they embed. Never rebuild or re-upload a version that is already published
     (new bytes, new signature). The update check sends nothing but a
-    User-Agent, at most once a day, and runs no timer. `0.0.0`, ad-hoc and
+    User-Agent, at most once a day (`releases/latest`, plus the candidate's
+    manifest when there is a newer version, so a release this Mac cannot run
+    is never offered), and runs no timer. Never raise the minimum macOS
+    without `release.sh --raise-floor` and a note for the Macs left behind. `0.0.0`, ad-hoc and
     translocated copies never update themselves.
 11. **Put logic where it can be tested.** Prefer small pure types
     (`ThreadURL`, `BubbleChainSync`, `DisplayHop`, `Chain.dockedRowXs`) with
