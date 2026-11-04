@@ -51,6 +51,11 @@ final class BubbleChipView: NSView {
         shadowHost.layer?.shadowRadius = 5
         shadowHost.layer?.shadowOffset = CGSize(width: 0, height: -2)
         shadowHost.layer?.shadowPath = CGPath(ellipseIn: shadowHost.bounds, transform: nil)
+        // The shadow and the badge reach past these views' bounds. macOS 14
+        // stopped clipping views by default; macOS 13 still does, which cut
+        // the badge's corner and the shadow off. Say so rather than rely on it.
+        clipsToBounds = false
+        shadowHost.clipsToBounds = false
         addSubview(shadowHost)
 
         circle.wantsLayer = true

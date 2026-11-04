@@ -111,4 +111,20 @@ final class HostRulesTests: XCTestCase {
             XCTAssertFalse(Plume.isExternallyOpenable(URL(string: s)!), s)
         }
     }
+
+    // macOS 13's URL(string:) rejects non-ASCII and macOS 14's re-escapes
+    // "%"; the result must be the real destination on both.
+    func testLenientURLEncodesOnlyWhatItMust() {
+        XCTAssertEqual(Plume.lenientURL("https://example.com/a?b=1#c")?.absoluteString,
+                       "https://example.com/a?b=1#c")
+        let vi = Plume.lenientURL("https://vi.wikipedia.org/wiki/Việt_Nam?q=đ%20x#mục")
+        XCTAssertNotNil(vi)
+        XCTAssertEqual(vi?.host, "vi.wikipedia.org")
+        XCTAssertTrue(vi?.absoluteString.contains("%20x") ?? false)    // existing escape kept
+        XCTAssertFalse(vi?.absoluteString.contains("%2520") ?? true)   // not double-encoded
+        XCTAssertNil(Plume.lenientURL(""))
+        // Through the link shim too.
+        let shim = URL(string: "https://l.facebook.com/l.php?u=https%3A%2F%2Fvi.wikipedia.org%2Fwiki%2FVi%E1%BB%87t_Nam&h=x")!
+        XCTAssertEqual(Plume.unwrapLinkShim(shim).host, "vi.wikipedia.org")
+    }
 }
