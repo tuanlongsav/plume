@@ -4,7 +4,7 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
-## 1.0 — 2026-11-03
+## 1.0 — 2026-11-04
 
 - Bản phát hành đầu tiên qua GitHub Releases.
 - Tự cập nhật: Plume kiểm tra bản mới mỗi ngày một lần và hỏi trước khi cài.
