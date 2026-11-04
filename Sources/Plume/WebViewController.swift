@@ -32,14 +32,17 @@ final class WebViewController: NSViewController {
     /// common case — don't flash it.
     private var downloadLoadingWork: DispatchWorkItem?
 
-    /// Set when the next main-frame navigation is an attachment we expect to
-    /// turn into a download — so `didStartProvisionalNavigation` doesn't flash
-    /// the "loading" pill for it. Consumed once, when that navigation starts.
-    private var expectingAttachmentNav = false
-    /// Set with `expectingAttachmentNav`, but held until the navigation's
-    /// response is decided: an attachment fetch rides the main frame, so a
-    /// redirect off the attachment CDN must not be allowed to commit there.
-    private var attachmentNavPending = false
+    /// The attachment URL the next main-frame navigation is expected to load.
+    /// Consumed when a navigation starts: if it is this URL, that navigation
+    /// is tagged as `attachmentNavigation`; if not, it is forgotten, so a
+    /// stale expectation can never be pinned on an unrelated load.
+    private var expectingAttachmentURL: URL?
+    /// The main-frame navigation that is an attachment fetch, until its
+    /// response is decided. An attachment rides the main frame, so a redirect
+    /// off the attachment CDN must not be allowed to commit there. Tied to the
+    /// navigation object, not a flag: clicking a second attachment cancels the
+    /// first, and that failure must not clear what the second one set.
+    private var attachmentNavigation: WKNavigation?
     /// The sidebar row a native right-click menu is currently open for.
     private var pendingRowDelete: (url: URL, name: String)?
 
@@ -510,8 +513,7 @@ extension WebViewController: WKNavigationDelegate {
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
             if Plume.isAttachmentHost(url) {
                 if navigationAction.targetFrame?.isMainFrame != false {
-                    expectingAttachmentNav = true   // suppress the loading pill
-                    attachmentNavPending = true
+                    expectingAttachmentURL = url
                 }
                 decisionHandler(.allow); return
             }
@@ -537,8 +539,10 @@ extension WebViewController: WKNavigationDelegate {
             // file. Sub-frame heuristics are gated so we don't grab an unrelated
             // navigation. Inline HTML and images/video from fbcdn.net render as
             // before.
-            let pendingAttachment = attachmentNavPending && navigationResponse.isForMainFrame
-            if navigationResponse.isForMainFrame { attachmentNavPending = false }
+            // A main-frame response belongs to the latest main-frame
+            // navigation, the only one `attachmentNavigation` can name.
+            let pendingAttachment = attachmentNavigation != nil && navigationResponse.isForMainFrame
+            if navigationResponse.isForMainFrame { attachmentNavigation = nil }
             if dispositionType == "attachment"
                 || (!navigationResponse.canShowMIMEType && navigationResponse.isForMainFrame)
                 || (Plume.isAttachmentHost(url) && navigationResponse.isForMainFrame) {
@@ -553,7 +557,7 @@ extension WebViewController: WKNavigationDelegate {
                 decisionHandler(.cancel); return
             }
         }
-        if navigationResponse.isForMainFrame { attachmentNavPending = false }
+        if navigationResponse.isForMainFrame { attachmentNavigation = nil }
         decisionHandler(.allow)
     }
 
@@ -575,11 +579,25 @@ extension WebViewController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // An attachment navigation becomes a download almost immediately —
-        // don't flash the loading pill for it.
-        if expectingAttachmentNav { expectingAttachmentNav = false; return }
+        // don't flash the loading pill for it. Any other navigation starting
+        // supersedes whatever attachment fetch was in flight.
+        let expected = expectingAttachmentURL
+        expectingAttachmentURL = nil
+        if navigation === attachmentNavigation { return }
+        if let expected, Self.sameResource(webView.url, expected) {
+            attachmentNavigation = navigation
+            return
+        }
+        attachmentNavigation = nil
         // First paint is covered by the splash; later navigations (reload /
         // retry) get the non-blocking loading overlay.
         if hasLoadedOnce { setLoading(true) }
+    }
+
+    /// Host and path: what the provisional URL keeps of the request.
+    private static func sameResource(_ a: URL?, _ b: URL) -> Bool {
+        guard let a else { return false }
+        return a.host?.lowercased() == b.host?.lowercased() && a.path == b.path
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -601,20 +619,20 @@ extension WebViewController: WKNavigationDelegate {
     // A failed *provisional* load (DNS/offline/TLS before any content).
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
-        handleLoadFailure(error)
+        handleLoadFailure(error, navigation: navigation)
     }
 
     // A failure after content started committing.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
                  withError error: Error) {
-        handleLoadFailure(error)
+        handleLoadFailure(error, navigation: navigation)
     }
 
-    private func handleLoadFailure(_ error: Error) {
+    private func handleLoadFailure(_ error: Error, navigation: WKNavigation?) {
         let ns = error as NSError
-        // Whatever was pending has ended; neither flag may outlive it.
-        attachmentNavPending = false
-        expectingAttachmentNav = false
+        // Only the failing navigation's own state ends with it: a superseded
+        // attachment fetch fails AFTER its successor was already tagged.
+        if let navigation, navigation === attachmentNavigation { attachmentNavigation = nil }
         setLoading(false)   // any nav ending clears the loading pill
         // Not real Messenger-connectivity failures — don't show offline:
         //  • a user-cancelled navigation (a link handed to the browser, or one
@@ -671,9 +689,7 @@ extension WebViewController: WKUIDelegate {
             // Attachment-CDN URLs load in the main frame so the response
             // handler converts them to a download (without replacing the
             // current document); suppress the loading pill for them.
-            expectingAttachmentNav = true
-            attachmentNavPending = true
-            webView.load(navigationAction.request)
+            attachmentNavigation = webView.load(navigationAction.request)
             return nil
         }
         if Plume.opensInPopup(url) {
