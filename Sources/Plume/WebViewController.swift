@@ -40,6 +40,8 @@ final class WebViewController: NSViewController {
     /// response is decided: an attachment fetch rides the main frame, so a
     /// redirect off the attachment CDN must not be allowed to commit there.
     private var attachmentNavPending = false
+    /// Set while redirecting from Facebook's feed to Messenger (`didFinish`).
+    private var triedMessagesFromHome = false
     /// The sidebar row a native right-click menu is currently open for.
     private var pendingRowDelete: (url: URL, name: String)?
 
@@ -425,9 +427,17 @@ final class WebViewController: NSViewController {
     private func applyWebTheme() {
         guard Preferences.webStyling else {
             removeWebStyle(InjectedScript.StyleID.density)
+            removeWebStyle(InjectedScript.StyleID.facebookChrome)
             return
         }
         applyDensity()
+        // Facebook's own top bar (search, feed, notifications) has no place in
+        // a Messenger app. Only on facebook.com: messenger.com has no such bar.
+        if let url = webView.url, Plume.isFacebook(url) {
+            setWebStyle(InjectedScript.StyleID.facebookChrome, InjectedScript.facebookChromeCSS)
+        } else {
+            removeWebStyle(InjectedScript.StyleID.facebookChrome)
+        }
     }
     private func applyDensity() {
         if Preferences.webStyling, Preferences.compact {
@@ -502,6 +512,13 @@ extension WebViewController: WKNavigationDelegate {
         // Web content explicitly asked to download (e.g. an <a download> link).
         if navigationAction.shouldPerformDownload {
             decisionHandler(.download); return
+        }
+        // Messenger → the rest of Facebook: the browser, not over the inbox.
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.targetFrame?.isMainFrame != false,
+           Plume.leavesMessenger(url, from: webView.url) {
+            Self.openExternally(url)
+            decisionHandler(.cancel); return
         }
         // A user clicking an outbound link → hand off to the real browser,
         // EXCEPT attachment-CDN links: allow those through so the response
@@ -585,6 +602,15 @@ extension WebViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         pendingRetry?.cancel()
         pendingRetry = nil
+        // A login that lands on Facebook's feed: go on to Messenger, once, and
+        // keep the splash up meanwhile. Once only, in case /messages itself
+        // sends this account back to the feed.
+        if Plume.isFacebookHome(webView.url), !triedMessagesFromHome {
+            triedMessagesFromHome = true
+            load()
+            return
+        }
+        if Plume.isMessagesPage(webView.url) { triedMessagesFromHome = false }
         hasLoadedOnce = true
         setContentState(.main)
         setLoading(false)

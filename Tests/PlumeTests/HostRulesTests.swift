@@ -126,3 +126,47 @@ final class HostRulesTests: XCTestCase {
         }
     }
 }
+
+/// facebook.com/messages, where Messenger moved in 2026.
+final class FacebookMessagesRulesTests: XCTestCase {
+
+    func testHomeIsFacebookMessages() {
+        XCTAssertEqual(Plume.homeURL.absoluteString, "https://www.facebook.com/messages/")
+        XCTAssertTrue(Plume.isInternal(Plume.homeURL))
+        XCTAssertTrue(Plume.isMessagesPage(Plume.homeURL))
+    }
+
+    func testMessagesPages() {
+        XCTAssertTrue(Plume.isMessagesPage(URL(string: "https://www.facebook.com/messages/t/1/")))
+        XCTAssertTrue(Plume.isMessagesPage(URL(string: "https://web.facebook.com/messages")))
+        XCTAssertFalse(Plume.isMessagesPage(URL(string: "https://www.facebook.com/messagesfoo")))
+        XCTAssertFalse(Plume.isMessagesPage(URL(string: "https://www.facebook.com/")))
+        XCTAssertFalse(Plume.isMessagesPage(URL(string: "https://www.messenger.com/t/1")))
+        XCTAssertFalse(Plume.isMessagesPage(URL(string: "https://evil.com/messages/")))
+        XCTAssertFalse(Plume.isMessagesPage(nil))
+    }
+
+    // A profile or post clicked in a chat must not replace the inbox; the
+    // login pages before Messenger is open must stay in the app.
+    func testLeavingMessenger() {
+        let inbox = URL(string: "https://www.facebook.com/messages/t/1/")
+        let profile = URL(string: "https://www.facebook.com/some.person")!
+        XCTAssertTrue(Plume.leavesMessenger(profile, from: inbox))
+        XCTAssertFalse(Plume.leavesMessenger(URL(string: "https://www.facebook.com/messages/t/2/")!,
+                                             from: inbox))
+        XCTAssertFalse(Plume.leavesMessenger(URL(string: "https://www.facebook.com/checkpoint/")!,
+                                             from: URL(string: "https://www.facebook.com/login/")))
+        // The link shim is outbound already, handled by its own rule.
+        XCTAssertFalse(Plume.leavesMessenger(URL(string: "https://l.facebook.com/l.php?u=x")!,
+                                             from: inbox))
+        XCTAssertFalse(Plume.leavesMessenger(URL(string: "https://example.com/")!, from: inbox))
+    }
+
+    func testFacebookHome() {
+        XCTAssertTrue(Plume.isFacebookHome(URL(string: "https://www.facebook.com/")))
+        XCTAssertTrue(Plume.isFacebookHome(URL(string: "https://www.facebook.com")))
+        XCTAssertTrue(Plume.isFacebookHome(URL(string: "https://web.facebook.com/home.php")))
+        XCTAssertFalse(Plume.isFacebookHome(URL(string: "https://www.facebook.com/messages/")))
+        XCTAssertFalse(Plume.isFacebookHome(URL(string: "https://www.messenger.com/")))
+    }
+}

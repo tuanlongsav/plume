@@ -11,6 +11,9 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
   Tắt trong menu Plume ▸ Tự động kiểm tra cập nhật.
 - Gói cập nhật được ký và kiểm chữ ký trước khi cài; app đã ký Developer ID và
   qua công chứng (notarization) của Apple.
+- Messenger đã chuyển từ messenger.com sang facebook.com/messages: Plume mở
+  thẳng trang mới. Thanh trên cùng của Facebook được ẩn, và link sang trang
+  Facebook khác (trang cá nhân, bài viết) mở trong trình duyệt.
 - ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).
 - Số chưa đọc trên Dock không còn nhấp nháy về 0 khi có tin nhắn mới.
 - Thông báo cùng một đoạn chat gộp làm một thay vì xếp chồng; thông báo từ

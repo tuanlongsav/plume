@@ -1,8 +1,11 @@
 import Foundation
 
 enum Plume {
-    /// The page we wrap. messenger.com serves a full desktop web app.
-    static let homeURL = URL(string: "https://www.messenger.com/")!
+    /// The page we wrap. Meta retired messenger.com in 2026 and sends its
+    /// visitors to facebook.com/messages; loading messenger.com now ends in a
+    /// redirect, a PIN prompt or a hang. messenger.com stays an internal host
+    /// for the accounts and links that still land there.
+    static let homeURL = URL(string: "https://www.facebook.com/messages/")!
 
     /// A current desktop Safari UA so Facebook serves the full-featured
     /// desktop site (and not a degraded / "please upgrade" page).
@@ -53,6 +56,34 @@ enum Plume {
               scheme == "http" || scheme == "https"
         else { return url }
         return target
+    }
+
+    /// facebook.com itself, not a subdomain shim: where Messenger now lives.
+    static func isFacebook(_ url: URL) -> Bool {
+        guard let host = url.host else { return false }
+        return matches(host, in: ["facebook.com"]) && !isLinkShim(url)
+    }
+
+    /// Messenger's own pages on facebook.com.
+    static func isMessagesPage(_ url: URL?) -> Bool {
+        guard let url, isFacebook(url) else { return false }
+        return url.path == "/messages" || url.path.hasPrefix("/messages/")
+    }
+
+    /// A clicked link from Messenger to the rest of Facebook (a profile, a
+    /// post, the feed). Loaded here it would replace the inbox — and the next
+    /// bubble snapshot of that page deletes every bubble — so it goes to the
+    /// browser. Only once the user is in Messenger: before that, the login and
+    /// checkpoint pages are also facebook.com and must stay in the app.
+    static func leavesMessenger(_ url: URL, from current: URL?) -> Bool {
+        isMessagesPage(current) && isFacebook(url) && !isMessagesPage(url)
+    }
+
+    /// Facebook's home feed, where a login sometimes lands instead of the
+    /// page that asked for it.
+    static func isFacebookHome(_ url: URL?) -> Bool {
+        guard let url, isFacebook(url) else { return false }
+        return ["", "/", "/home.php"].contains(url.path)
     }
 
     /// What a `window.open` / `target=_blank` request gets a real window for:

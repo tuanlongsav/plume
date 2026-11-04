@@ -4,7 +4,8 @@ A lightweight, native macOS client for Facebook Messenger — like
 [Caprine](https://github.com/sindresorhus/caprine), but without Electron.
 
 Caprine bundles a full Chromium (~150 MB) per app. Plume wraps
-`messenger.com` in the system **WebKit** (`WKWebView`) instead, so the app
+Messenger on the web (`facebook.com/messages`; Meta retired `messenger.com`
+in 2026) in the system **WebKit** (`WKWebView`) instead, so the app
 is a few MB, starts fast, scrolls with native momentum, and shares the OS's
 WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 
@@ -37,6 +38,11 @@ The conversation-navigation logic is adapted from
 [`NOTICE`](NOTICE).
 
 ## Known limitations
+
+Messenger now lives at `facebook.com/messages`, so Plume needs a Facebook
+login. An account that only ever used Messenger, with no Facebook profile,
+may not be able to sign in there; that is Meta's change, not something the
+app can route around. `messenger.com` links still open in the app.
 
 After an in-place change to a conversation — e.g. **unsending a message** — the
 **conversation list can fail to re-render** its latest-message preview (or drop

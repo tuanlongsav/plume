@@ -56,6 +56,9 @@ final class ThreadDeleteTests: XCTestCase {
         XCTAssertEqual(id("https://www.messenger.com/t/123/"), "123")
         XCTAssertEqual(id("https://www.messenger.com/e2ee/t/123/?x=1"), "123")
         XCTAssertEqual(id("https://www.messenger.com/"), "")
+        XCTAssertEqual(id("https://www.facebook.com/messages/t/123/"), "123")
+        XCTAssertEqual(id("https://www.facebook.com/messages/e2ee/t/123"), "123")
+        XCTAssertEqual(id("https://www.facebook.com/messages/"), "")
     }
 
     func testOutcomeParsing() {

@@ -20,6 +20,20 @@ enum InjectedScript {
     }
     """#
 
+    /// Whether a row belongs to the open conversation rather than the inbox.
+    /// messenger.com keeps the inbox outside `[role="main"]`; facebook.com
+    /// may nest the whole Messenger layout, inbox navigation included, inside
+    /// its page-wide `main`, where "inside main" alone would skip every inbox
+    /// row and leave the bubbles, shortcuts and delete flow with nothing.
+    static let inThreadJS = #"""
+    function inThread(el) {
+        var main = el.closest('[role="main"]');
+        if (!main) return false;
+        var nav = el.closest('[role="navigation"]');
+        return !(nav && main.contains(nav));
+    }
+    """#
+
     /// Shared theatre detector. Photo/video lightbox only — not emoji,
     /// sticker, GIF or reaction pickers. Those are also `role="dialog"` and
     /// used to trip the greedy size check, which expanded the card to fill
@@ -192,6 +206,7 @@ enum InjectedScript {
     /// else.
     static let deleteThreadJS = deleteMatchJS + #"""
     var M = window.__plumeDeleteMatch;
+    \#(InjectedScript.inThreadJS)
     var id = M.threadId(href);
     if (!id) return "no-row";
 
@@ -227,7 +242,7 @@ enum InjectedScript {
     function findRow() {
         var rows = document.querySelectorAll('[role="row"]');
         for (var i = 0; i < rows.length; i++) {
-            if (rows[i].closest('[role="main"]')) continue;   // skip the open thread
+            if (inThread(rows[i])) continue;   // skip the open thread
             var link = rows[i].querySelector('a[role="link"][href]');
             if (link && M.threadId(link.href) === id) return rows[i];
         }
@@ -295,6 +310,7 @@ enum InjectedScript {
         "use strict";
         if (window.__plumeInstalled) return;
         window.__plumeInstalled = true;
+        \#(InjectedScript.inThreadJS)
 
         const bridge = window.webkit && window.webkit.messageHandlers;
         function post(channel, payload) {
@@ -413,7 +429,7 @@ enum InjectedScript {
             function rows() {
                 return Array.prototype.slice
                     .call(document.querySelectorAll('[role="row"]'))
-                    .filter(function (r) { return !r.closest('[role="main"]'); });
+                    .filter(function (r) { return !inThread(r); });
             }
             function click(row) {
                 if (!row) return false;
@@ -510,7 +526,7 @@ enum InjectedScript {
                 var rows = document.querySelectorAll('[role="row"]');
                 for (var i = 0; i < rows.length && out.length < limit; i++) {
                     var r = rows[i];
-                    if (r.closest('[role="main"]')) continue;   // skip the open thread
+                    if (inThread(r)) continue;   // skip the open thread
                     var link = r.querySelector('a[role="link"][href]');
                     if (!link || link.href.indexOf('/t/') === -1) continue;
                     var img = r.querySelector('img');
@@ -588,7 +604,7 @@ enum InjectedScript {
                 var rows = document.querySelectorAll('[role="row"]');
                 var seed = null;
                 for (var i = 0; i < rows.length; i++) {
-                    if (rows[i].closest('[role="main"]')) continue;
+                    if (inThread(rows[i])) continue;
                     if (rows[i].querySelector('a[role="link"][href*="/t/"]')) {
                         seed = rows[i]; break;
                     }
@@ -612,7 +628,7 @@ enum InjectedScript {
         document.addEventListener("contextmenu", function (e) {
             try {
                 var row = e.target && e.target.closest && e.target.closest('[role="row"]');
-                if (!row || row.closest('[role="main"]')) return;
+                if (!row || inThread(row)) return;
                 var link = row.querySelector('a[role="link"][href]');
                 if (!link || link.href.indexOf('/t/') === -1) return;
                 var name = (row.innerText || row.textContent || "").split("\n")
@@ -766,6 +782,7 @@ enum InjectedScript {
     enum StyleID {
         static let density = "plume-density" // compact
         static let cardThread = "plume-card-thread"
+        static let facebookChrome = "plume-fb-chrome"
     }
 
     /// Compact conversation/message density (only active when Compact is on).
@@ -774,6 +791,16 @@ enum InjectedScript {
     static let densityCSS = """
     [role="grid"] [role="row"] { padding-top: 2px; padding-bottom: 2px; }
     [role="main"] [role="row"] [dir="auto"] > span { padding-top: 5px; padding-bottom: 5px; }
+    """
+
+    /// facebook.com/messages: hide Facebook's global top bar and give its
+    /// height back to Messenger (`--header-height` is what the layout reserves
+    /// for it). Two rules, both matched once: the banner is a single landmark
+    /// and the variable sits on the root's own theme class — stable, semantic
+    /// names, not the hashed ones. The same two rules Goofy ships.
+    static let facebookChromeCSS = """
+    [role="banner"] { display: none !important; }
+    .__fb-light-mode:root, .__fb-dark-mode:root { --header-height: 0px !important; }
     """
 
     /// Hide Messenger chrome inside the bubble card. Caprine (issue 1718) and
@@ -790,6 +817,10 @@ enum InjectedScript {
       flex: 0 0 0 !important;
       overflow: hidden !important;
       pointer-events: none !important;
+    }
+    html.plume-card-thread [role="banner"] { display: none !important; }
+    html.plume-card-thread.__fb-light-mode, html.plume-card-thread.__fb-dark-mode {
+      --header-height: 0px !important;
     }
     html.plume-card-thread [role="main"] {
       width: 100% !important;

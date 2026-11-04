@@ -11,7 +11,8 @@ file from Claude; Gemini CLI reads it through `.gemini/settings.json`.
 
 ## Project
 
-A native macOS client for Facebook Messenger: `messenger.com` inside the
+A native macOS client for Facebook Messenger: `facebook.com/messages` (Meta
+retired `messenger.com` in 2026; its URLs are still accepted) inside the
 system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
 an Android-style "chat heads" bubble mode and a self-updater fed by GitHub
 Releases. Pure Swift + AppKit, no runtime dependencies (the updater uses only

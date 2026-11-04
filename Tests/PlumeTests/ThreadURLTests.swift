@@ -46,3 +46,32 @@ final class ThreadURLTests: XCTestCase {
         XCTAssertFalse(ThreadURL.isThread(URL(string: "https://www.messenger.com/")!))
     }
 }
+
+/// facebook.com/messages, where Messenger moved in 2026.
+final class FacebookThreadURLTests: XCTestCase {
+
+    func testCanonicalisesFacebookThreads() {
+        XCTAssertEqual(ThreadURL.canonical(from: URL(string: "https://www.facebook.com/messages/t/123")!),
+                       URL(string: "https://www.facebook.com/messages/t/123/"))
+        XCTAssertEqual(ThreadURL.canonical(from: URL(string: "https://web.facebook.com/messages/e2ee/t/9/?x=1")!),
+                       URL(string: "https://www.facebook.com/messages/e2ee/t/9/"))
+    }
+
+    // A thread is the same thread on either site.
+    func testIdMatchesAcrossSites() {
+        let ids = ["https://www.facebook.com/messages/t/77/",
+                   "https://www.facebook.com/messages/e2ee/t/77",
+                   "https://www.messenger.com/t/77/"]
+            .map { ThreadURL.id(from: URL(string: $0)) }
+        XCTAssertEqual(ids, ["77", "77", "77"])
+    }
+
+    func testFacebookNonThreadsReturnNil() {
+        for s in ["https://www.facebook.com/messages/", "https://www.facebook.com/messages/t/",
+                  "https://www.facebook.com/", "https://www.facebook.com/t/1",
+                  "https://www.facebook.com/someone", "https://facebook.com.evil.com/messages/t/1",
+                  "https://evilfacebook.com/messages/t/1"] {
+            XCTAssertNil(ThreadURL.canonical(from: URL(string: s)), s)
+        }
+    }
+}
