@@ -10,13 +10,12 @@ enum PlumeOverlay {
     static let level = NSWindow.Level.screenSaver
 
     static var collectionBehavior: NSWindow.CollectionBehavior {
-        var b: NSWindow.CollectionBehavior = [
-            .canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle
-        ]
-        if #available(macOS 15.0, *) {
-            b.insert(.canJoinAllApplications)
-        }
-        return b
+        // .canJoinAllApplications keeps the panels over another app's
+        // full-screen Space and in Stage Manager. Its symbol first appeared in
+        // the macOS 15 SDK, which is why it was gated on 15, but the SDK
+        // declares it available from 13.0, so every supported system gets it.
+        [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle,
+         .canJoinAllApplications]
     }
 
     static func apply(to window: NSWindow) {
