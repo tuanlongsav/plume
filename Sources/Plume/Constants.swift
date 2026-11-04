@@ -1,9 +1,18 @@
 import Foundation
 
 enum Plume {
-    /// The page we wrap. messenger.com serves a full desktop web app.
+    /// The page we wrap. messenger.com serves a full desktop web app; accounts
+    /// Meta has moved to facebook.com start at `facebookMessagesURL` instead.
     static let homeURL = URL(string: "https://www.messenger.com/")!
 
+    /// Where Messenger lives for accounts Meta has moved into Facebook
+    /// (from April 2026). Same app, same roles, under facebook.com's top bar.
+    static let facebookMessagesURL = URL(string: "https://www.facebook.com/messages/")!
+
+    /// Where the app starts: the site the account was last seen on.
+    static var startURL: URL {
+        Preferences.messengerSite == .facebook ? facebookMessagesURL : homeURL
+    }
     /// A current desktop Safari UA so Facebook serves the full-featured
     /// desktop site (and not a degraded / "please upgrade" page).
     static let userAgent =

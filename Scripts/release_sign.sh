@@ -25,6 +25,10 @@ SIGN_IDENTITY="${PLUME_SIGN_IDENTITY:-Developer ID Application: Long Hoang Tuan 
 # One Apple ID and team covers every app; the profile is named after the first
 # project that created it.
 KEYCHAIN_PROFILE="${PLUME_NOTARY_PROFILE:-vkey}"
+# The designated requirement the in-app updater enforces on every update
+# (Updater.requirementText; UpdateVerifierTests keeps the two identical). An
+# app that fails it would be rejected by every installed copy.
+REQUIREMENT='anchor apple generic and identifier "com.htl.plume" and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "U4B264GM2B"'
 
 VERSION=""
 SKIP_NOTARIZE=0
@@ -64,11 +68,21 @@ IDENTITIES="$(security find-identity -v -p codesigning 2>&1 || true)"
 grep -qF "$SIGN_IDENTITY" <<<"$IDENTITIES" \
     || die "signing identity not in keychain: $SIGN_IDENTITY"
 
-CERT_END="$(security find-certificate -c "${SIGN_IDENTITY%% (*}" -p 2>/dev/null \
+# The certificate codesign will use, picked by its SHA-1: after a renewal the
+# old and new certificates share a name, and `find-certificate -c` alone
+# returns whichever comes first.
+CERT_SHA1="$(grep -F "\"$SIGN_IDENTITY\"" <<<"$IDENTITIES" | awk 'NR == 1 {print $2}')"
+CERT_END="$(security find-certificate -a -Z -p -c "${SIGN_IDENTITY%% (*}" 2>/dev/null \
+    | awk -v h="$CERT_SHA1" '/^SHA-1 hash:/ {on = ($3 == h)}
+        on && /BEGIN CERTIFICATE/ {p = 1} p {print} p && /END CERTIFICATE/ {exit}' \
     | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
-if [[ -n "$CERT_END" ]]; then
+if [[ -z "$CERT_END" ]]; then
+    echo "WARNING: could not read the signing certificate's expiry date." >&2
+else
     echo "Signing cert valid until: $CERT_END"
-    END_EPOCH="$(date -j -f '%b %e %T %Y %Z' "$CERT_END" '+%s' 2>/dev/null || echo 0)"
+    # openssl prints English month names; parse them in the C locale.
+    END_EPOCH="$(LC_ALL=C date -j -f '%b %e %T %Y %Z' "$CERT_END" '+%s' 2>/dev/null || echo 0)"
+    [[ "$END_EPOCH" != 0 ]] || echo "WARNING: could not parse the expiry date." >&2
     NOW_EPOCH="$(date '+%s')"
     [[ "$END_EPOCH" == 0 || "$END_EPOCH" -gt "$NOW_EPOCH" ]] \
         || die "signing cert EXPIRED on $CERT_END"
@@ -103,6 +117,8 @@ grep -qF "Authority=${SIGN_IDENTITY}" <<<"$SIG" \
 grep -q 'flags=.*runtime' <<<"$SIG" \
     || die "hardened runtime is off — notarization would reject this."
 codesign --verify --strict "$APP" || die "app fails signature verification."
+codesign --verify --strict -R="$REQUIREMENT" "$APP" \
+    || die "app does not meet the updater's Developer ID requirement (team U4B264GM2B)."
 
 if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
     echo "--skip-notarize: notarization skipped. The result is NOT shippable."

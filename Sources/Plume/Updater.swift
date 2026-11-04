@@ -20,16 +20,20 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         case translocated, readOnlyVolume, notWritable
     }
 
-    private static let bundleID = "com.htl.plume"
+    static let bundleID = "com.htl.plume"
     /// Plume's Developer ID: Apple-anchored, a Developer ID leaf (the two
     /// OIDs), team U4B264GM2B. `codesign --verify` alone would also accept an
     /// ad-hoc signature, which proves nothing about who built the app.
-    private static let requirementText =
+    static let requirementText =
         "anchor apple generic and identifier \"\(bundleID)\""
         + " and certificate 1[field.1.2.840.113635.100.6.2.6]"
         + " and certificate leaf[field.1.2.840.113635.100.6.1.13]"
         + " and certificate leaf[subject.OU] = \"U4B264GM2B\""
-    private static let stagingName = ".Plume-update"
+    /// Next to the app, so the final swap is a rename on one volume.
+    private static var stagingURL: URL {
+        Bundle.main.bundleURL.deletingLastPathComponent()
+            .appendingPathComponent(".Plume-update", isDirectory: true)
+    }
     private static let launchDelay: TimeInterval = 20
 
     private lazy var session: URLSession = {
@@ -50,6 +54,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private var downloadTask: URLSessionDownloadTask?
     private var downloadedZip: URL?
     private var progress: UpdateProgressWindow?
+    /// No automatic check before this; set after a check that got no verdict.
+    /// In memory only: a relaunch may try again at once.
+    private var retryNotBefore: Date?
 
     // MARK: Entry points
 
@@ -66,9 +73,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     func checkIfDue() {
         guard armed, !busy, Preferences.autoUpdateCheck,
               UpdateSchedule.isDue(last: Preferences.lastUpdateCheck),
+              retryNotBefore.map({ Date() >= $0 }) ?? true,
               Self.eligibility() == .ok
         else { return }
-        Preferences.lastUpdateCheck = Date()
         check(manual: false)
     }
 
@@ -80,7 +87,6 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         }
         let eligibility = Self.eligibility()
         guard eligibility == .ok else { explainIneligible(eligibility); return }
-        Preferences.lastUpdateCheck = Date()
         check(manual: true)
     }
 
@@ -113,7 +119,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
     }()
 
-    private static func makeRequirement() -> SecRequirement? {
+    static func makeRequirement() -> SecRequirement? {
         var requirement: SecRequirement?
         guard SecRequirementCreateWithString(requirementText as CFString, [], &requirement)
                 == errSecSuccess else { return nil }
@@ -139,10 +145,26 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private func handleCheck(data: Data?, response: URLResponse?, error: Error?,
                              current: AppVersion, manual: Bool) {
         busy = false
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        // Only an answer from GitHub starts the daily interval; anything else
+        // retries later the same day instead of waiting until tomorrow.
+        if error == nil, status == 200 || status == 404 {
+            Preferences.lastUpdateCheck = Date()
+            retryNotBefore = nil
+        } else {
+            retryNotBefore = Date().addingTimeInterval(UpdateSchedule.retryDelay(
+                retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
+                rateLimitReset: http?.value(forHTTPHeaderField: "X-RateLimit-Reset")))
+        }
         // 404: the repository has no published release yet.
         if status == 404 {
             if manual { showUpToDate(current) }
+            return
+        }
+        // Unauthenticated API calls are limited per IP address.
+        if status == 403 || status == 429 {
+            if manual { showFailure(.rateLimited) }
             return
         }
         guard error == nil, status == 200, let data,
@@ -173,17 +195,12 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     }
 
     private func offer(_ candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
-        let alert = NSAlert()
-        alert.messageText = L.t("Có bản \(candidate.title)", "\(candidate.title) is available")
         let installed = L.t("Bạn đang dùng Plume \(current).", "You have Plume \(current).")
-        alert.informativeText = candidate.notes.isEmpty
-            ? installed : candidate.notes + "\n\n" + installed
-        alert.addButton(withTitle: L.t("Cập nhật", "Update"))
-        alert.addButton(withTitle: L.t("Để sau", "Later"))
-        if !manual {
-            alert.addButton(withTitle: L.t("Bỏ qua phiên bản này", "Skip This Version"))
-        }
-        switch present(alert) {
+        var buttons = [L.t("Cập nhật", "Update"), L.t("Để sau", "Later")]
+        if !manual { buttons.append(L.t("Bỏ qua phiên bản này", "Skip This Version")) }
+        switch present(L.t("Có bản \(candidate.title)", "\(candidate.title) is available"),
+                       candidate.notes.isEmpty ? installed : candidate.notes + "\n\n" + installed,
+                       buttons: buttons) {
         case .alertFirstButtonReturn:
             Preferences.skippedVersion = nil
             fetchManifest(for: candidate)
@@ -207,10 +224,15 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private func handleManifest(data: Data?, response: URLResponse?, error: Error?,
                                 candidate: UpdateCandidate) {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard error == nil, status == 200, let data, data.count <= 64 * 1024,
+        guard error == nil, status == 200, let data else {
+            finishWithFailure(.downloadFailed, page: candidate.pageURL)
+            return
+        }
+        // It arrived, so a bad manifest is a bad release, not a bad connection.
+        guard data.count <= 64 * 1024,
               let manifest = try? JSONDecoder().decode(UpdateManifest.self, from: data)
         else {
-            finishWithFailure(.downloadFailed, page: candidate.pageURL)
+            finishWithFailure(.invalidPackage, page: candidate.pageURL)
             return
         }
         do {
@@ -291,8 +313,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private func install(zip: URL, candidate: UpdateCandidate, manifest: UpdateManifest) {
         progress?.showInstalling()
         let installed = Bundle.main.bundleURL
-        let staging = installed.deletingLastPathComponent()
-            .appendingPathComponent(Self.stagingName, isDirectory: true)
+        let staging = Self.stagingURL
         // Hashing, unzipping and the signature check take a few seconds on a
         // universal binary; keep them off the main thread.
         DispatchQueue.global(qos: .userInitiated).async {
@@ -402,11 +423,8 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         } catch {
             // Installed but not relaunched: say so rather than quit silently.
             finishQuietly()
-            let alert = NSAlert()
-            alert.messageText = L.t("Đã cài Plume \(version)", "Plume \(version) is installed")
-            alert.informativeText = L.t("Thoát và mở lại Plume để dùng bản mới.",
-                                        "Quit and reopen Plume to use it.")
-            present(alert)
+            present(L.t("Đã cài Plume \(version)", "Plume \(version) is installed"),
+                    L.t("Thoát và mở lại Plume để dùng bản mới.", "Quit and reopen Plume to use it."))
             return
         }
         progress?.close()
@@ -417,20 +435,19 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// Same algorithm as Scripts/swap_bundle.swift: afterwards `staged` holds
     /// the old app, which the relaunch script deletes.
     private static func swap(_ staged: URL, into installed: URL) throws {
-        let from = staged.path, to = installed.path, old = staged.path + ".old"
-        // errno is read straight after the call: anything in between (the
-        // URL→path bridging included) may overwrite it.
-        let swapError: Int32 = from.withCString { f in
-            to.withCString { t in
-                renamex_np(f, t, UInt32(RENAME_SWAP)) == 0 ? 0 : errno
+        // errno is read inside the closure: the path conversions on the way
+        // out may overwrite it.
+        let err: Int32 = staged.withUnsafeFileSystemRepresentation { from in
+            installed.withUnsafeFileSystemRepresentation { to in
+                renamex_np(from, to, UInt32(RENAME_SWAP)) == 0 ? 0 : errno
             }
         }
-        if swapError == 0 { return }
-        guard swapError == ENOTSUP || swapError == EINVAL else {
-            throw UpdateFailure.installFailed
-        }
+        if err == 0 { return }
+        guard err == ENOTSUP || err == EINVAL else { throw UpdateFailure.installFailed }
         // No RENAME_SWAP here (some network volumes): two renames, each
-        // atomic, with the old app put back if the second one fails.
+        // atomic, with the old app put back if the second one fails, where
+        // replaceItemAt could fail halfway with nothing to roll back.
+        let from = staged.path, to = installed.path, old = staged.path + ".old"
         guard rename(to, old) == 0 else { throw UpdateFailure.installFailed }
         guard rename(from, to) == 0 else {
             _ = rename(old, to)
@@ -443,11 +460,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     // MARK: Housekeeping
 
     private func removeLeftoverStaging() {
-        let staging = Bundle.main.bundleURL.deletingLastPathComponent()
-            .appendingPathComponent(Self.stagingName, isDirectory: true)
-        if FileManager.default.fileExists(atPath: staging.path) {
-            try? FileManager.default.removeItem(at: staging)
-        }
+        try? FileManager.default.removeItem(at: Self.stagingURL)
     }
 
     private func showPostUpdateNoticeIfNeeded() {
@@ -480,26 +493,17 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     }
 
     private func showFailure(_ failure: UpdateFailure, page: URL? = nil) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = failure.title
-        alert.informativeText = failure.detail
-        alert.addButton(withTitle: "OK")
         let page = page ?? UpdateFeed.releasesPageURL(repo: Preferences.updateRepo)
-        if page != nil {
-            alert.addButton(withTitle: L.t("Mở trang tải về", "Open Download Page"))
-        }
-        if present(alert) == .alertSecondButtonReturn, let page {
+        let buttons = page == nil ? [] : ["OK", L.t("Mở trang tải về", "Open Download Page")]
+        if present(failure.title, failure.detail, buttons: buttons, style: .warning)
+            == .alertSecondButtonReturn, let page {
             NSWorkspace.shared.open(page)
         }
     }
 
     private func showUpToDate(_ current: AppVersion) {
-        let alert = NSAlert()
-        alert.messageText = L.t("Bạn đang dùng bản mới nhất", "You're up to date")
-        alert.informativeText = L.t("Plume \(current) là phiên bản mới nhất.",
-                                    "Plume \(current) is the newest version.")
-        present(alert)
+        present(L.t("Bạn đang dùng bản mới nhất", "You're up to date"),
+                L.t("Plume \(current) là phiên bản mới nhất.", "Plume \(current) is the newest version."))
     }
 
     private func explainIneligible(_ reason: Eligibility) {
@@ -524,8 +528,15 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
     /// App-modal: in bubble mode the main window is hidden, so a sheet would
     /// never appear. Raised above the `.screenSaver`-level bubbles then.
+    /// No buttons given means a single OK.
     @discardableResult
-    private func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
+    private func present(_ title: String, _ detail: String, buttons: [String] = [],
+                         style: NSAlert.Style = .informational) -> NSApplication.ModalResponse {
+        let alert = NSAlert()
+        alert.alertStyle = style
+        alert.messageText = title
+        alert.informativeText = detail
+        buttons.forEach { alert.addButton(withTitle: $0) }
         NSApp.activate()
         if ChatBubbleController.isOpen { alert.window.level = .screenSaver }
         return alert.runModal()
@@ -534,6 +545,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
 enum UpdateFailure: Error, Equatable {
     case checkFailed
+    case rateLimited
     case assetsMissing(AppVersion)
     case downloadFailed
     case invalidPackage
@@ -543,7 +555,7 @@ enum UpdateFailure: Error, Equatable {
 
     var title: String {
         switch self {
-        case .checkFailed:
+        case .checkFailed, .rateLimited:
             return L.t("Không kiểm tra được cập nhật", "Couldn't check for updates")
         case .assetsMissing(let v):
             return L.t("Plume \(v) chưa sẵn sàng", "Plume \(v) isn't ready yet")
@@ -562,6 +574,9 @@ enum UpdateFailure: Error, Equatable {
         switch self {
         case .checkFailed, .downloadFailed:
             return L.t("Kiểm tra kết nối mạng rồi thử lại.", "Check your connection and try again.")
+        case .rateLimited:
+            return L.t("GitHub đang giới hạn số lần hỏi từ mạng này. Thử lại sau khoảng một giờ.",
+                       "GitHub is limiting requests from this network. Try again in about an hour.")
         case .assetsMissing:
             return L.t("Bản phát hành chưa có gói cập nhật. Thử lại sau ít phút.",
                        "The release has no update package yet. Try again in a few minutes.")
@@ -576,80 +591,5 @@ enum UpdateFailure: Error, Equatable {
         case .ineligible(let detail):
             return detail
         }
-    }
-}
-
-/// A small floating panel with the download progress and a Cancel button.
-/// Its own window, so it works while the main window is hidden in bubble mode.
-final class UpdateProgressWindow: NSObject, NSWindowDelegate {
-    private let panel: NSPanel
-    private let label = NSTextField(labelWithString: "")
-    private let bar = NSProgressIndicator()
-    private let cancelButton = NSButton()
-    private let onCancel: () -> Void
-
-    init(version: AppVersion, onCancel: @escaping () -> Void) {
-        self.onCancel = onCancel
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 112),
-                        styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        super.init()
-        panel.title = "Plume"
-        panel.isReleasedWhenClosed = false
-        panel.level = ChatBubbleController.isOpen ? .screenSaver : .floating
-        panel.delegate = self
-
-        label.stringValue = L.t("Đang tải Plume \(version)…", "Downloading Plume \(version)…")
-        label.frame = NSRect(x: 20, y: 74, width: 340, height: 18)
-        bar.style = .bar
-        bar.isIndeterminate = false
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.frame = NSRect(x: 20, y: 48, width: 340, height: 20)
-        cancelButton.title = L.t("Huỷ", "Cancel")
-        cancelButton.bezelStyle = .push
-        cancelButton.keyEquivalent = "\u{1b}"
-        cancelButton.target = self
-        cancelButton.action = #selector(cancel)
-        cancelButton.frame = NSRect(x: 262, y: 8, width: 104, height: 32)
-
-        let content = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
-        for view in [label, bar, cancelButton] as [NSView] { content.addSubview(view) }
-        panel.contentView = content
-    }
-
-    func show() {
-        panel.center()
-        NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    func bringToFront() {
-        NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    func setFraction(_ fraction: Double) {
-        bar.doubleValue = min(max(fraction, 0), 1)
-    }
-
-    func showInstalling() {
-        label.stringValue = L.t("Đang kiểm tra và cài đặt…", "Verifying and installing…")
-        bar.isIndeterminate = true
-        bar.startAnimation(nil)
-        cancelButton.isEnabled = false
-    }
-
-    func close() {
-        panel.delegate = nil
-        bar.stopAnimation(nil)
-        panel.orderOut(nil)
-    }
-
-    @objc private func cancel() { onCancel() }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard cancelButton.isEnabled else { return false }   // too late to stop an install
-        onCancel()
-        return false   // the Updater closes it once the download has stopped
     }
 }

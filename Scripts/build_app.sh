@@ -19,6 +19,9 @@ SIGN_IDENTITY="${PLUME_SIGN_IDENTITY:-}"
 VERSION="${PLUME_VERSION:-0.0.0}"
 if [[ "$VERSION" == "0.0.0" ]]; then
     BUILD=1
+elif [[ "$VERSION" == "0.0" ]]; then
+    echo "PLUME_VERSION 0.0 is reserved: local builds are 0.0.0." >&2
+    exit 1
 elif [[ "$VERSION" =~ ^([1-9][0-9]*|0)\.([1-9]?[0-9])$ ]]; then
     # Same scheme as vkey: strictly increasing and derived from the version
     # alone, so it does not depend on how much git history a clone has.
@@ -56,9 +59,10 @@ if [[ "$CONFIG" == "release" ]]; then
 fi
 
 # The .icns is generated, not committed: it is 1.2 MB of pixels that
-# Scripts/icon_gen.swift reproduces exactly. Rendered once, then reused.
+# Scripts/icon_gen.swift reproduces exactly. Rendered once, then reused
+# until the generator changes.
 ICON_SRC="$ROOT/Resources/Plume.icns"
-if [[ ! -f "$ICON_SRC" ]]; then
+if [[ ! -f "$ICON_SRC" || "$ROOT/Scripts/icon_gen.swift" -nt "$ICON_SRC" ]]; then
     bash "$ROOT/Scripts/make_icon.sh"
 fi
 cp "$ICON_SRC" "$APP/Contents/Resources/Plume.icns"

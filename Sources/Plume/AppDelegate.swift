@@ -127,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func reload() { controller.reload() }
     @objc private func goBack() { controller.goBack() }
     @objc private func goForward() { controller.goForward() }
+    @objc private func goToChats() { controller.goToChats() }
 
     @objc private func toggleDark() { controller.toggleDark() }
     @objc private func followSystem() { controller.followSystemAppearance() }
@@ -172,7 +173,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Preferences.bubbleMode && !ChatBubbleController.isOpen
     }
 
-    private func enterBubbleMode(announce: Bool, attempt: Int = 0) {
+    /// `wentToChats`: this attempt sequence loaded the chat list itself, so it
+    /// must wait for it even when the user asked, instead of failing at once.
+    private func enterBubbleMode(announce: Bool, attempt: Int = 0, wentToChats: Bool = false) {
+        var wentToChats = wentToChats
+        if controller.isOnLoginPage {
+            guard announce else { return }
+            showBubbleModeAlert(L.t("Hãy đăng nhập Facebook trước",
+                                    "Log in to Facebook first"),
+                                L.t("Messenger nằm trong Facebook sau khi bạn đăng nhập. Đăng nhập xong rồi thử lại.",
+                                    "Messenger is inside Facebook once you are logged in. Log in, then try again."))
+            return
+        }
+        // On facebook.com the window can be on the feed or a profile, which
+        // have no chat list to read. Go to the list, then wait for it below.
+        if attempt == 0, !ThreadURL.isMessagesSurface(controller.webView.url) {
+            controller.goToChats()
+            wentToChats = true
+        }
         controller.fetchConversations(limit: Preferences.bubbleLimit) { [weak self] convos in
             guard let self, !ChatBubbleController.isOpen else { return }
             // The user may have decided for themselves while this was in flight.
@@ -181,21 +199,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             // snapshot came back empty (list still loading, or Messenger's DOM
             // moved), the app would simply look like it vanished.
             guard !convos.isEmpty else {
-                if !announce, attempt < 8 {
+                if !announce || wentToChats, attempt < 8 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                        guard let self, self.restoreStillWanted else { return }
-                        self.enterBubbleMode(announce: false, attempt: attempt + 1)
+                        guard let self else { return }
+                        if announce {
+                            // The user may have opened bubbles by other means meanwhile.
+                            guard !ChatBubbleController.isOpen else { return }
+                        } else {
+                            guard self.restoreStillWanted else { return }
+                        }
+                        self.enterBubbleMode(announce: announce, attempt: attempt + 1,
+                                             wentToChats: wentToChats)
                     }
                     return
                 }
                 guard announce else { return }   // a restore that fails just stays put
-                let alert = NSAlert()
-                alert.messageText = L.t("Chưa lấy được danh sách hội thoại",
-                                        "Couldn't read your conversation list")
-                alert.informativeText = L.t(
-                    "Hãy đợi Messenger tải xong danh sách hội thoại rồi thử lại.",
-                    "Wait for Messenger's conversation list to finish loading, then try again.")
-                alert.beginSheetModal(for: self.window, completionHandler: nil)
+                self.showBubbleModeAlert(
+                    L.t("Chưa lấy được danh sách hội thoại", "Couldn't read your conversation list"),
+                    L.t("Hãy đợi Messenger tải xong danh sách hội thoại rồi thử lại.",
+                        "Wait for Messenger's conversation list to finish loading, then try again."))
                 return
             }
             // Lend the live web view: Messenger is already up in it, so the
@@ -218,6 +240,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self.window.orderOut(nil)
             Preferences.bubbleMode = true
         }
+    }
+
+    private func showBubbleModeAlert(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.beginSheetModal(for: window, completionHandler: nil)
     }
 
     private func exitBubbleMode() {
@@ -336,6 +365,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         back.target = self
         let fwd = viewMenu.addItem(withTitle: L.t("Tiến", "Forward"), action: #selector(goForward), keyEquivalent: "]")
         fwd.target = self
+        let chats = viewMenu.addItem(withTitle: L.t("Về Đoạn chat", "Back to Chats"), action: #selector(goToChats), keyEquivalent: "h")
+        chats.keyEquivalentModifierMask = [.command, .shift]
+        chats.target = self
         viewMenu.addItem(.separator())
         let fullScreen = viewMenu.addItem(withTitle: L.t("Vào chế độ toàn màn hình", "Enter Full Screen"), action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
@@ -409,29 +441,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let limitItem = windowMenu.addItem(withTitle: L.t("Số bong bóng tối đa", "Maximum Bubbles"),
                                            action: nil, keyEquivalent: "")
-        let limitMenu = NSMenu()
-        for n in Preferences.bubbleLimitChoices {
-            let it = limitMenu.addItem(withTitle: "\(n)", action: #selector(setBubbleLimit(_:)),
-                                       keyEquivalent: "")
-            it.tag = n
-            it.target = self
-        }
-        limitItem.submenu = limitMenu
+        limitItem.submenu = ChatBubbleController.bubbleLimitMenu(
+            target: self, action: #selector(setBubbleLimit(_:)))
         let displayItem = windowMenu.addItem(
             withTitle: L.t("Vị trí màn hình bong bóng", "Bubble Display Placement"),
             action: nil, keyEquivalent: "")
-        let displayMenu = NSMenu()
-        let followIt = displayMenu.addItem(
-            withTitle: L.t("Theo màn hình đang hoạt động", "Follow active display"),
-            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
-        followIt.tag = 1
-        followIt.target = self
-        let stayIt = displayMenu.addItem(
-            withTitle: L.t("Giữ nguyên màn hình hiện tại", "Stay on current display"),
-            action: #selector(setBubbleFollowDisplay(_:)), keyEquivalent: "")
-        stayIt.tag = 0
-        stayIt.target = self
-        displayItem.submenu = displayMenu
+        displayItem.submenu = ChatBubbleController.bubbleDisplayMenu(
+            target: self, action: #selector(setBubbleFollowDisplay(_:)))
         windowMenu.addItem(withTitle: L.t("Luôn ở trên cùng", "Always on Top"), action: #selector(toggleAlwaysOnTop), keyEquivalent: "").target = self
         NSApp.windowsMenu = windowMenu
 

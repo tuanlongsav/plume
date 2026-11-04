@@ -56,15 +56,16 @@ open build/Plume.app
 bash Scripts/release.sh 1.0            # sign, notarize and publish a release
 ```
 
-CI runs `swift test` and a release build on a macOS runner for every push and
-pull request ([`ci.yml`](.github/workflows/ci.yml)); each run keeps the zipped
-`Plume.app` as an artifact.
+CI runs `swift test` and a release build on a macOS runner for every pull
+request and every push to `main` ([`ci.yml`](.github/workflows/ci.yml)).
 
-Requires Xcode command-line tools (Swift 6). `build_app.sh` compiles with
+Requires Xcode 16 or later (Swift 6 toolchain, macOS 15 SDK); the app itself
+runs on macOS 14 and later. `build_app.sh` compiles with
 SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
 ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
 `install.sh` runs that build, quits a running Plume, replaces the copy in
-`/Applications` and opens it — login and settings carry over, though a new
+`/Applications` and opens it (it refuses to replace an installed release, which
+updates itself; a local build would not) — login and settings carry over, though a new
 ad-hoc signature can make macOS ask for camera/mic (and, the first time a
 non-PDF attachment is saved to ~/Downloads, Downloads-folder) access again.
 `release.sh` (via `release_sign.sh`) builds a universal binary, signs it with
@@ -72,7 +73,8 @@ a Developer ID, notarizes and staples the app and a drag-to-install DMG, signs
 the app zip for the updater and publishes all of it as a GitHub release — see
 [`docs/RELEASE.md`](docs/RELEASE.md). The icon — a
 feather on a blue→indigo gradient — is drawn by `Scripts/icon_gen.swift`;
-`build_app.sh` renders it into `Resources/Plume.icns` on the first build.
+`build_app.sh` renders it into `Resources/Plume.icns` on the first build and
+again whenever the generator changes.
 
 ## Updates and privacy
 

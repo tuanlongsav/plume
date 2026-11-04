@@ -142,6 +142,24 @@ enum UpdateSchedule {
         let elapsed = now.timeIntervalSince(last)
         return elapsed < 0 || elapsed >= interval
     }
+
+    /// After a check that never reached a verdict (offline, 5xx, rate
+    /// limited), how long to wait before the next automatic attempt. Only a
+    /// verdict starts the daily interval; this keeps a failure from costing a
+    /// whole day without retrying on every app activation either. GitHub's
+    /// rate-limit headers are honoured, clamped to between a minute and six
+    /// hours so a bad header can neither spin nor silence the updater.
+    static func retryDelay(retryAfter: String?, rateLimitReset: String?,
+                           now: Date = Date()) -> TimeInterval {
+        let fallback: TimeInterval = 3600
+        var delay = fallback
+        if let s = retryAfter?.trimmingCharacters(in: .whitespaces), let v = TimeInterval(s) {
+            delay = v
+        } else if let s = rateLimitReset?.trimmingCharacters(in: .whitespaces), let epoch = TimeInterval(s) {
+            delay = epoch - now.timeIntervalSince1970
+        }
+        return min(max(delay, 60), 6 * 3600)
+    }
 }
 
 enum SystemVersion {

@@ -20,6 +20,64 @@ enum InjectedScript {
     }
     """#
 
+    /// The chat list's rows: `[role=row]`s holding a link to a thread, outside
+    /// the open conversation (`[role=main]`) and outside Facebook's top bar
+    /// (`[role=banner]`), whose Messenger popover is a list of chats too. Rows
+    /// in the navigation's grid come first: that is the list itself on both
+    /// messenger.com and facebook.com/messages. Spliced into each script that
+    /// needs it, like `normJS`; a function declaration, so it is hoisted.
+    static let listRowsJS = #"""
+    function plumeListRows() {
+        var all = document.querySelectorAll('[role="row"]');
+        var inList = [], other = [];
+        for (var i = 0; i < all.length; i++) {
+            var r = all[i];
+            if (r.closest('[role="main"]') || r.closest('[role="banner"]')) continue;
+            var link = r.querySelector('a[role="link"][href]');
+            if (!link || link.href.indexOf('/t/') === -1) continue;
+            (r.closest('[role="navigation"] [role="grid"]') ? inList : other).push(r);
+        }
+        return inList.length ? inList : other;
+    }
+    // Whether a chat-list row is unread. The accessible label says so in some
+    // locales only (never on a Vietnamese UI). Messenger also renders an
+    // unread row's preview semibold, and facebook.com adds a visually hidden
+    // screen-reader note inside an `html-span` (a stable class, not a hashed
+    // one) that other hidden notes ("Online now", "Sent") do not sit in.
+    function plumeRowUnread(row, preview) {
+        if (row.querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) return true;
+        try {
+            if (preview === undefined) {
+                var lines = (row.innerText || row.textContent || "").split("\n")
+                    .map(function (x) { return x.trim(); }).filter(Boolean);
+                preview = (lines[1] || "").slice(0, 80);
+            }
+            if (preview) {
+                var probe = preview.slice(0, 12);
+                var nodes = row.querySelectorAll('[dir="auto"], span');
+                for (var q = 0; q < nodes.length; q++) {
+                    var txt = (nodes[q].textContent || "").trim();
+                    if (!txt || txt.indexOf(probe) !== 0) continue;
+                    var fw = parseInt(window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
+                    if (fw >= 600) return true;
+                    break;
+                }
+            }
+            var notes = row.querySelectorAll('.html-span > span, .html-span > div');
+            for (var h = 0; h < notes.length; h++) {
+                var n = notes[h];
+                if (n.childElementCount !== 0 || !(n.textContent || "").trim()) continue;
+                var cs = window.getComputedStyle(n);
+                if (cs.position === "absolute"
+                    && (cs.width === "1px" || cs.height === "1px" || cs.overflow === "hidden")) {
+                    return true;
+                }
+            }
+        } catch (e) {}
+        return false;
+    }
+    """#
+
     /// Shared theatre detector. Photo/video lightbox only — not emoji,
     /// sticker, GIF or reaction pickers. Those are also `role="dialog"` and
     /// used to trip the greedy size check, which expanded the card to fill
@@ -190,7 +248,7 @@ enum InjectedScript {
     /// `ThreadDeleteOutcome` raw value. Role/label hooks only. A step that
     /// doesn't find its exact control backs out with Escape and clicks nothing
     /// else.
-    static let deleteThreadJS = deleteMatchJS + #"""
+    static let deleteThreadJS = deleteMatchJS + listRowsJS + #"""
     var M = window.__plumeDeleteMatch;
     var id = M.threadId(href);
     if (!id) return "no-row";
@@ -225,9 +283,8 @@ enum InjectedScript {
         } catch (e) {}
     }
     function findRow() {
-        var rows = document.querySelectorAll('[role="row"]');
+        var rows = plumeListRows();
         for (var i = 0; i < rows.length; i++) {
-            if (rows[i].closest('[role="main"]')) continue;   // skip the open thread
             var link = rows[i].querySelector('a[role="link"][href]');
             if (link && M.threadId(link.href) === id) return rows[i];
         }
@@ -331,9 +388,7 @@ enum InjectedScript {
             post("notify", {
                 id: id,
                 title: String(title || ""),
-                body: String(this.body || ""),
-                icon: String(this.icon || ""),
-                tag: String(this.tag || "")
+                body: String(this.body || "")
             });
             // Fire onshow after the caller has had a chance to assign it
             // (the spec delivers it asynchronously, not from the constructor).
@@ -410,11 +465,7 @@ enum InjectedScript {
         //     class churn; conversation-list rows live OUTSIDE the open thread
         //     ([role=main]). No-ops harmlessly if the DOM shifts. -------------
         window.__plumeConv = (function () {
-            function rows() {
-                return Array.prototype.slice
-                    .call(document.querySelectorAll('[role="row"]'))
-                    .filter(function (r) { return !r.closest('[role="main"]'); });
-            }
+            function rows() { return plumeListRows(); }
             function click(row) {
                 if (!row) return false;
                 var link = row.querySelector('[role="link"]') ||
@@ -447,14 +498,22 @@ enum InjectedScript {
                     var start = Math.max(0, selectedIndex());
                     for (var s = 1; s <= r.length; s++) {
                         var idx = (start + s) % r.length;
-                        if (r[idx].querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) {
-                            return click(r[idx]);
-                        }
+                        if (plumeRowUnread(r[idx])) return click(r[idx]);
                     }
                     return false;
                 },
+                // The chat list's own search, not "Search Facebook" in the
+                // top bar, which comes first in the document on facebook.com.
                 find: function () {
-                    var el = document.querySelector('[type="search"]');
+                    var r = rows()[0];
+                    var nav = r && r.closest('[role="navigation"]');
+                    var el = nav && nav.querySelector('[type="search"]');
+                    if (!el) {
+                        var all = document.querySelectorAll('[type="search"]');
+                        for (var i = 0; i < all.length && !el; i++) {
+                            if (!all[i].closest('[role="banner"]')) el = all[i];
+                        }
+                    }
                     if (el) { el.focus(); return true; }
                     return false;
                 }
@@ -507,12 +566,10 @@ enum InjectedScript {
         window.__plumeConvList = function (limit) {
             var out = [];
             try {
-                var rows = document.querySelectorAll('[role="row"]');
+                var rows = plumeListRows();
                 for (var i = 0; i < rows.length && out.length < limit; i++) {
                     var r = rows[i];
-                    if (r.closest('[role="main"]')) continue;   // skip the open thread
                     var link = r.querySelector('a[role="link"][href]');
-                    if (!link || link.href.indexOf('/t/') === -1) continue;
                     var img = r.querySelector('img');
                     // Read the row's own lines rather than slicing the
                     // aria-label at its first comma: a group thread is named
@@ -546,27 +603,7 @@ enum InjectedScript {
                     }
                     label = String(label).trim().slice(0, 60);
 
-                    // Unread. The accessible label carries it in some locales
-                    // and not others — on a Vietnamese UI it never appears, so
-                    // this also reads the styling Messenger actually uses: an
-                    // unread row's preview line is rendered semibold, a read
-                    // one regular.
-                    var unread = !!r.querySelector(
-                        '[aria-label*="unread" i], [aria-label*="chưa đọc" i]');
-                    if (!unread && preview) {
-                        try {
-                            var probe = preview.slice(0, 12);
-                            var nodes = r.querySelectorAll('[dir="auto"], span');
-                            for (var q = 0; q < nodes.length; q++) {
-                                var txt = (nodes[q].textContent || "").trim();
-                                if (!txt || txt.indexOf(probe) !== 0) continue;
-                                var fw = parseInt(
-                                    window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
-                                if (fw >= 600) unread = true;
-                                break;
-                            }
-                        } catch (e) {}
-                    }
+                    var unread = plumeRowUnread(r, preview);
                     out.push({
                         href: link.href,
                         name: label,
@@ -585,14 +622,7 @@ enum InjectedScript {
         // scroll position actually moved (more history may still be available).
         window.__plumeExpandConvList = function () {
             try {
-                var rows = document.querySelectorAll('[role="row"]');
-                var seed = null;
-                for (var i = 0; i < rows.length; i++) {
-                    if (rows[i].closest('[role="main"]')) continue;
-                    if (rows[i].querySelector('a[role="link"][href*="/t/"]')) {
-                        seed = rows[i]; break;
-                    }
-                }
+                var seed = plumeListRows()[0];
                 if (!seed) return false;
                 var el = seed.parentElement;
                 for (var d = 0; d < 14 && el; d++, el = el.parentElement) {
@@ -606,15 +636,25 @@ enum InjectedScript {
             return false;
         };
 
+        // Unread chats in the list, for the Dock badge on facebook.com, whose
+        // title count also takes in notifications Plume cannot clear. -1 when
+        // the list cannot be read, so native code keeps the badge it has.
+        window.__plumeUnreadCount = function () {
+            try {
+                var rows = plumeListRows(), n = 0;
+                for (var i = 0; i < rows.length; i++) if (plumeRowUnread(rows[i])) n++;
+                return n;
+            } catch (e) { return -1; }
+        };
+
         // --- Right-click a sidebar row → native menu (delete chat) ------
         // Only rows of the conversation list; a right-click anywhere else
         // keeps WebKit's own menu.
         document.addEventListener("contextmenu", function (e) {
             try {
                 var row = e.target && e.target.closest && e.target.closest('[role="row"]');
-                if (!row || row.closest('[role="main"]')) return;
+                if (!row || plumeListRows().indexOf(row) === -1) return;
                 var link = row.querySelector('a[role="link"][href]');
-                if (!link || link.href.indexOf('/t/') === -1) return;
                 var name = (row.innerText || row.textContent || "").split("\n")
                     .map(function (x) { return x.trim(); }).filter(Boolean)[0]
                     || (link.getAttribute('aria-label') || '').split(',')[0];
@@ -635,7 +675,7 @@ enum InjectedScript {
     /// only run at document start, so a Messenger session that was already
     /// open would otherwise keep older helpers. One copy, so the two cannot
     /// drift apart.
-    static let threadHelpersJS = #"""
+    static let threadHelpersJS = InjectedScript.listRowsJS + #"""
     // --- Open a thread without reloading (chat bubble card) --------
     // The card keeps one long-lived web view, so switching bubbles must not
     // reload messenger.com — that rebuilds the entire SPA, and the empty
@@ -654,10 +694,14 @@ enum InjectedScript {
             // card stuck on old virtualised history. `force` re-clicks the
             // row so Messenger remounts the latest messages.
             if (id(location.href) === want && !force) return true;
-            var links = document.querySelectorAll('a[href*="/t/"]');
-            for (var i = 0; i < links.length; i++) {
-                if (id(links[i].href) !== want) continue;
-                var hit = links[i].querySelector('[role="gridcell"]') || links[i];
+            // The chat list's row; Facebook's top-bar popover and links
+            // inside a message are not the list, and clicking one there opens
+            // a mini chat or a profile instead of routing the page.
+            var rows = plumeListRows();
+            for (var i = 0; i < rows.length; i++) {
+                var link = rows[i].querySelector('a[role="link"][href]');
+                if (!link || id(link.href) !== want) continue;
+                var hit = link.querySelector('[role="gridcell"]') || link;
                 hit.click();
                 return true;
             }
@@ -694,11 +738,9 @@ enum InjectedScript {
         try {
             var main = document.querySelector('[role="main"]');
             if (!main) return false;
-            var phrases = [
-                "jump to present", "tin nhan moi", "tin nhắn mới",
-                "new message", "new messages", "xem tin nhan moi",
-                "xem tin nhắn mới", "nhay den hien tai", "nhảy đến hiện tại"
-            ];
+            // Labels pass through norm() and are matched by substring, so
+            // accent-free stems cover the accented and plural variants.
+            var phrases = ["jump to present", "nhay den hien tai", "new message", "tin nhan moi"];
             \#(InjectedScript.normJS)
             var jumped = false;
             var controls = main.querySelectorAll('[role="button"], button, a[role="link"]');
@@ -781,6 +823,18 @@ enum InjectedScript {
     /// conversation is removed from the DOM, so a narrow clipped webview can
     /// never host theatre/forward overlays. The card itself must be that wide;
     /// these rules only hide the leftover sidebar columns.
+    ///
+    /// On facebook.com/messages the page also carries Facebook's top bar
+    /// (`[role=banner]`) and reserves its height through `--header-height`,
+    /// which Facebook declares on `html` and on its theme classes
+    /// (`__fb-light-mode` / `__fb-dark-mode`, stable names, not hashed ones).
+    /// Hiding the bar alone would leave a blank band. Each concern is a rule of
+    /// its own, so a selector one engine rejects cannot take the others down.
+    /// The variables differ from the custom properties the performance note
+    /// warns about: they sit on `html` and two theme roots, not on every node,
+    /// and change only when the card toggles this class. While
+    /// `__plumeOpenThreadRetry` lifts the class the bar briefly shows; that is
+    /// accepted.
     static let cardThreadCSS = """
     html.plume-card-thread [role="navigation"]:not(:has([role="main"])) {
       display: none !important;
@@ -796,6 +850,15 @@ enum InjectedScript {
       max-width: none !important;
       flex: 1 1 auto !important;
       min-width: 0 !important;
+    }
+    html.plume-card-thread [role="banner"]:not([role="main"] *) {
+      display: none !important;
+    }
+    html.plume-card-thread,
+    html.plume-card-thread .__fb-light-mode,
+    html.plume-card-thread .__fb-dark-mode {
+      --header-height: 0px !important;
+      --messenger-card-spacing: 0px !important;
     }
     """
 

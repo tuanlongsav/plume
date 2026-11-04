@@ -22,6 +22,24 @@ final class UnreadCountTests: XCTestCase {
         XCTAssertEqual(WebViewController.unreadCount(from: "(a3) Messenger"), 0)
         XCTAssertEqual(WebViewController.unreadCount(from: "(12"), 0)   // no closing paren
     }
+
+    // Dock and app chip share this, so both show the same text.
+    func testBadgeLabel() {
+        XCTAssertNil(WebViewController.badgeLabel(0))
+        XCTAssertNil(WebViewController.badgeLabel(-1))
+        XCTAssertEqual(WebViewController.badgeLabel(7), "7")
+        XCTAssertEqual(WebViewController.badgeLabel(99), "99")
+        XCTAssertEqual(WebViewController.badgeLabel(100), "99+")
+    }
+
+    // On facebook.com the title is only a trigger (its count includes
+    // notifications); these pin what the parser itself does with those titles.
+    func testFacebookTitleShapes() {
+        XCTAssertEqual(WebViewController.unreadCount(from: "(3) Facebook"), 3)
+        XCTAssertEqual(WebViewController.unreadCount(from: "(3) Messenger | Facebook"), 3)
+        XCTAssertEqual(WebViewController.unreadCount(from: "Facebook"), 0)
+        XCTAssertEqual(WebViewController.unreadCount(from: "An messaged you"), 0)
+    }
 }
 
 final class UnreadTitleTests: XCTestCase {

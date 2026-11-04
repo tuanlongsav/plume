@@ -18,6 +18,11 @@ final class WebViewController: NSViewController {
     private enum ContentState { case splash, main, offline }
     private var contentState: ContentState = .splash
     private var hasLoadedOnce = false
+    /// When `followMessengerSite` last sent the feed on to the chat list.
+    private var lastFeedRedirect: Date?
+    /// The count the Dock badge shows now.
+    private var badgeCount = 0
+    private var zeroRecheck: DispatchWorkItem?
 
     /// Single in-flight auto-retry, cancellable so a manual retry or a
     /// successful load can't leave a stale reload queued behind it.
@@ -126,7 +131,21 @@ final class WebViewController: NSViewController {
     }
 
     func load() {
-        webView.load(URLRequest(url: Plume.homeURL))
+        webView.load(URLRequest(url: Plume.startURL))
+    }
+
+    /// View ▸ Back to Chats. On facebook.com a link in a chat (a profile, a
+    /// post) is same-site and leaves the window on a page with no chat list.
+    func goToChats() {
+        let onFacebook = ThreadURL.site(of: webView.url) == .facebook
+        webView.load(URLRequest(url: onFacebook ? Plume.facebookMessagesURL : Plume.startURL))
+    }
+
+    /// Facebook's login and security-check pages: nothing to read until the
+    /// user has signed in.
+    var isOnLoginPage: Bool {
+        guard let url = webView.url, ThreadURL.site(of: url) == .facebook else { return false }
+        return ["/login", "/checkpoint", "/two_step_verification"].contains { url.path.hasPrefix($0) }
     }
 
     // MARK: Chrome actions
@@ -196,21 +215,44 @@ final class WebViewController: NSViewController {
     // MARK: Badge
 
     private func updateBadgeFromTitle(_ title: String?) {
-        // A title with no count (Messenger's "An sent you a message" flash)
-        // keeps the last one; an unchanged count is not news to anyone.
-        guard let count = UnreadTitle.count(from: title), count != lastUnread else { return }
-        lastUnread = count
-        setBadge(count)
+        guard ThreadURL.site(of: webView.url) == .facebook else {
+            // A title with no count (Messenger's "An sent you a message"
+            // flash) keeps the last one; read as zero it blanked the badge
+            // on every flash.
+            if let count = UnreadTitle.count(from: title) { setBadge(count) }
+            return
+        }
+        refreshFacebookBadge()
     }
 
-    /// Last count published; nil until the first title that carries one.
-    private var lastUnread: Int?
+    /// facebook.com's "(N)" also counts notifications and friend requests,
+    /// which Plume cannot clear, and a "<name> messaged you" title flashes in
+    /// and out of it. So there the title (or a message notification) is only
+    /// the trigger: count unread chats in the list, on demand, no timer.
+    private func refreshFacebookBadge(confirmingZero: Bool = false) {
+        webView.evaluateJavaScript("window.__plumeUnreadCount ? window.__plumeUnreadCount() : -1") {
+            [weak self] result, _ in
+            guard let self, let n = (result as? NSNumber)?.intValue, n >= 0 else { return }
+            if n == 0, self.badgeCount > 0, !confirmingZero {
+                // A list in the middle of re-rendering reads as empty. Look
+                // once more before clearing a badge the user has not seen go.
+                self.zeroRecheck?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.refreshFacebookBadge(confirmingZero: true)
+                }
+                self.zeroRecheck = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+                return
+            }
+            self.zeroRecheck?.cancel()
+            self.setBadge(n)
+        }
+    }
 
-    /// Tell a newly built bubble chain the current count: titles are only
-    /// published when the count changes, so it may not change again for a while.
+    /// Tell a newly built bubble chain the current count: it would otherwise
+    /// wait for the next title change.
     func republishUnread() {
-        guard let count = lastUnread else { return }
-        setBadge(count)
+        setBadge(badgeCount)
     }
 
     // Messenger encodes the unread count as a *leading* "(N)" in the page
@@ -221,9 +263,16 @@ final class WebViewController: NSViewController {
         UnreadTitle.count(from: title) ?? 0
     }
 
+    /// Dock and app-chip badge text: nothing at zero, capped at "99+".
+    static func badgeLabel(_ count: Int) -> String? {
+        count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+    }
+
     // Called on the main thread (from title KVO); no dispatch needed.
     private func setBadge(_ count: Int) {
-        NSApp.dockTile.badgeLabel = count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+        badgeCount = count
+        let label = Self.badgeLabel(count)
+        if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
         // The chat bubble badges itself from this instead of watching the DOM.
         NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,
                                         userInfo: ["count": count])
@@ -301,11 +350,7 @@ final class WebViewController: NSViewController {
         else { return }
         pendingRowDelete = (url, body["name"] as? String ?? "")
         let menu = NSMenu()
-        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
-                              action: #selector(deleteFromRowMenu), keyEquivalent: "")
-        item.target = self
-        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-        menu.addItem(item)
+        menu.addItem(.deleteChat(target: self, action: #selector(deleteFromRowMenu)))
         menu.popUp(positioning: nil,
                    at: webView.convert(window.mouseLocationOutsideOfEventStream, from: nil),
                    in: webView)
@@ -466,6 +511,9 @@ extension WebViewController {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        // A new message may not change the title (facebook.com), so it is a
+        // trigger of its own for the badge and the bubble chain.
+        updateBadgeFromTitle(webView.title)
     }
 
     func handleNotifyClose(_ body: [String: Any], fromPopup: Bool = false) {
@@ -589,6 +637,7 @@ extension WebViewController: WKNavigationDelegate {
         setContentState(.main)
         setLoading(false)
         applyWebTheme()
+        followMessengerSite()
         onChromeUpdate?()
         // Deliberately separate from onChromeUpdate: that also fires on a load
         // FAILURE (handleLoadFailure calls it), and anything hooked there for
@@ -596,6 +645,22 @@ extension WebViewController: WKNavigationDelegate {
         let ready = onPageReady
         onPageReady = nil
         ready?()
+    }
+
+    /// Remember which site the account lives on, and take a login that lands
+    /// on the Facebook feed on to the chat list. Full loads only: Facebook's
+    /// own Home link routes in-page, never reaches didFinish, and is respected.
+    private func followMessengerSite() {
+        guard let url = webView.url, let site = ThreadURL.site(of: url) else { return }
+        if ThreadURL.isMessagesSurface(url) {
+            if Preferences.messengerSite != site { Preferences.messengerSite = site }
+            return
+        }
+        guard site == .facebook, ["", "/", "/home.php"].contains(url.path) else { return }
+        // Should /messages/ ever send us back here, this is not a loop.
+        if let last = lastFeedRedirect, Date().timeIntervalSince(last) < 30 { return }
+        lastFeedRedirect = Date()
+        webView.load(URLRequest(url: Plume.facebookMessagesURL))
     }
 
     // A failed *provisional* load (DNS/offline/TLS before any content).
@@ -888,4 +953,21 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         default: break
         }
     }
+}
+
+extension NSMenuItem {
+    /// "Delete Chat…" with a trash icon: the row menus of Messenger's sidebar
+    /// and of the bubble picker.
+    static func deleteChat(target: AnyObject, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: L.t("Xoá đoạn chat…", "Delete Chat…"),
+                              action: action, keyEquivalent: "")
+        item.target = target
+        item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        return item
+    }
+}
+
+extension Notification.Name {
+    /// Posted by the main web view whenever the dock badge changes.
+    static let plumeUnreadChanged = Notification.Name("plume.unreadChanged")
 }

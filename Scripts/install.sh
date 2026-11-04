@@ -5,12 +5,25 @@
 #
 # Login, cookies and preferences are keyed by the bundle id, so they survive
 # the update. A fresh ad-hoc signature can make macOS ask for camera/mic again.
+#
+# This is a local build (version 0.0.0, ad-hoc signed), which never updates
+# itself. Replacing an installed release with it would stop updates on this
+# Mac, so that needs PLUME_REPLACE_RELEASE=1.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SRC="$ROOT/build/Plume.app"
 DEST_DIR="${PLUME_INSTALL_DIR:-/Applications}"
 DEST="$DEST_DIR/Plume.app"
+
+INSTALLED="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
+    "$DEST/Contents/Info.plist" 2>/dev/null || true)"
+# Releases are stamped MAJOR.MINOR; local builds (and pre-release ones) are not.
+if [[ "$INSTALLED" =~ ^[0-9]+\.[0-9]+$ && "${PLUME_REPLACE_RELEASE:-0}" != "1" ]]; then
+    echo "$DEST is release $INSTALLED, which updates itself. A local build would not." >&2
+    echo "Run again with PLUME_REPLACE_RELEASE=1 to replace it anyway." >&2
+    exit 1
+fi
 
 bash "$ROOT/Scripts/build_app.sh" release
 
@@ -40,9 +53,6 @@ rm -rf "$STAGED" "$STAGED.old"
 ditto "$APP_SRC" "$STAGED"
 swift "$ROOT/Scripts/swap_bundle.swift" "$STAGED" "$DEST"
 rm -rf "$STAGED"
-# A local build carries no quarantine flag, but an older copy dragged in from
-# the DMG may have left one behind; clearing it is harmless either way.
-xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 
 echo "✓ installed: $DEST"
 open "$DEST"

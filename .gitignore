@@ -12,3 +12,7 @@ Resources/Plume.icns
 *.pem
 *.key
 *.p12
+*.p8
+# Left by icon_gen.swift when run by hand.
+*.iconset/
+.claude/settings.local.json

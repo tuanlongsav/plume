@@ -141,4 +141,35 @@ final class UpdateFeedTests: XCTestCase {
         XCTAssertFalse(SystemVersion.satisfies(minimum: "x", running: sonoma))
         XCTAssertFalse(SystemVersion.satisfies(minimum: "", running: sonoma))
     }
+
+    func testCheckIsDueAtExactlyADay() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(UpdateSchedule.isDue(last: now.addingTimeInterval(-24 * 3600), now: now))
+    }
+
+    // A failed check retries within the day, on GitHub's terms when it gives any.
+    func testRetryDelayAfterAFailedCheck() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: nil, now: now), 3600)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "120", rateLimitReset: nil, now: now), 120)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: "1800000900", now: now), 900)
+        // Retry-After wins over the reset time.
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "300", rateLimitReset: "1800000900", now: now), 300)
+        // Clamped: never a tight loop, never silent for more than six hours.
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "0", rateLimitReset: nil, now: now), 60)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: "1700000000", now: now), 60)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "999999", rateLimitReset: nil, now: now), 6 * 3600)
+        XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "soon", rateLimitReset: nil, now: now), 3600)
+    }
+
+    // Only https downloads are followed.
+    func testPlainHTTPAssetsCountAsMissing() throws {
+        var json = String(decoding: releaseJSON(), as: UTF8.self)
+        json = json.replacingOccurrences(of: "\"browser_download_url\": \"https://",
+                                         with: "\"browser_download_url\": \"http://")
+        let decision = UpdateFeed.decide(release: try release(Data(json.utf8)), current: v11,
+                                         skipped: nil, honourSkip: true)
+        guard case .assetsMissing(let v, _) = decision else { return XCTFail("\(decision)") }
+        XCTAssertEqual(v, AppVersion("1.2"))
+    }
 }

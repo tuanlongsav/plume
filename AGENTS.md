@@ -11,8 +11,9 @@ file from Claude; Gemini CLI reads it through `.gemini/settings.json`.
 
 ## Project
 
-A native macOS client for Facebook Messenger: `messenger.com` inside the
-system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
+A native macOS client for Facebook Messenger: `messenger.com`, or
+`facebook.com/messages` for accounts Meta has moved there (from April 2026),
+inside the system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
 an Android-style "chat heads" bubble mode and a self-updater fed by GitHub
 Releases. Pure Swift + AppKit, no runtime dependencies (the updater uses only
 CryptoKit and Security, which ship with macOS).
@@ -29,9 +30,9 @@ CryptoKit and Security, which ship with macOS).
 |---|---|
 | Unit tests | `swift test` |
 | Build the `.app` | `bash Scripts/build_app.sh release` → `build/Plume.app` (`debug` also works) |
-| Build and install/update in `/Applications` | `bash Scripts/install.sh` |
+| Build and install/update in `/Applications` | `bash Scripts/install.sh` (a local `0.0.0` build; refuses to replace an installed release unless `PLUME_REPLACE_RELEASE=1`) |
 | Developer ID signed + notarized `Plume-X.Y.dmg` and updater `Plume-X.Y.zip` | `bash Scripts/release_sign.sh X.Y` (needs the cert and the `vkey` notarytool profile) |
-| Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y` (`--no-publish` for a dry run); steps in `docs/RELEASE.md` |
+| Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y --no-publish` builds a notarized candidate; after testing it, `bash Scripts/release.sh X.Y --from-build` publishes exactly those files. Steps in `docs/RELEASE.md` |
 | Update-signing key / signatures | `swift Scripts/update_sign.swift keygen\|pubkey\|sign\|verify …` |
 | Regenerate the icon | `bash Scripts/make_icon.sh` (`build_app.sh` runs it when `Resources/Plume.icns` is missing; the `.icns` is generated, not committed) |
 
@@ -40,11 +41,14 @@ Environment knobs: `PLUME_UNIVERSAL=1` (arm64 + x86_64), `PLUME_SIGN_IDENTITY`
 `PLUME_NOTARY_PROFILE` (notarytool keychain profile, default `vkey`),
 `PLUME_VERSION` (`MAJOR.MINOR`; unset means `0.0.0`, a local build the updater
 never replaces), `PLUME_UPDATE_KEY` (path of the Ed25519 private key),
-`PLUME_RELEASE_REPO` (default `tuanlongsav/plume`).
+`PLUME_RELEASE_REPO` (default `tuanlongsav/plume`; any other repo is a test
+run that does not tag origin), `PLUME_REPLACE_RELEASE=1` (let `install.sh`
+replace an installed release).
 
-CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test` and
-`bash Scripts/build_app.sh release` on every push and pull request, and keeps
-the zipped `.app` as a run artifact. It is a backstop, not a substitute: before
+CI (`.github/workflows/ci.yml`, `macos-15` runner) runs `swift test`, a
+stamped release build, the update-signing and bundle-swap round trips and a
+bash 3.2 syntax check on every pull request and every push to `main`. It is a
+backstop, not a substitute: before
 calling a change done, run `swift test` and a release build locally. From a
 non-macOS machine, push and read the CI result instead of claiming it builds.
 Debug builds set `WKWebView.isInspectable`, so Safari ▸ Develop can attach to
@@ -58,8 +62,10 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `AppDelegate.swift` | Main window, menus, notification routing, bubble-mode switching |
 | `WebViewController.swift` | `WKWebView` config, navigation, downloads, badge, script-message bridge |
 | `InjectedScript.swift` | All JS/CSS injected into the page (notification bridge, conversation snapshot, theatre detection, delete-chat flow) |
-| `ChatBubbleController.swift` | Bubble mode: chain physics (`Chain`, `CADisplayLink`), card panel, conversation picker, multi-display follow |
-| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift` | Small pure-logic helpers, unit-tested |
+| `ChatBubbleController.swift` | Bubble mode controller: chain membership, frame loop (`CADisplayLink`), card, hover, gestures, multi-display follow |
+| `Chain.swift`, `BubbleChipView.swift`, `BubblePanels.swift`, `ConversationPicker.swift`, `BubbleConversation.swift`, `BubbleOverlay.swift` | Bubble-mode parts: chain geometry and springs, one chat head, the card/bubble/tether panels, the conversation list, the snapshot model and avatar cache, overlay level and `ChipMenuLift` |
+| `PlumeTrace.swift` | DEBUG-only multi-display trace log (no-op in release) |
+| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift` | Small pure-logic helpers, unit-tested. `ThreadURL` knows both Messenger sites (`messenger.com/t/…`, `facebook.com/messages/t/…`) and which pages are the chat pages |
 | `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
 | `Preferences.swift` | `UserDefaults`-backed settings |
 | `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |
@@ -87,9 +93,12 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
    when the value actually changes (see `__plumeSetStyle`).
 3. **Hook the page by role/ARIA/attributes, never by Messenger's hashed class
    names**, which change constantly.
-4. **Never `webView.load()` a thread URL on a live session.** A full reload
-   empties the inbox DOM and the next snapshot deletes every bubble. Open
-   threads with `__plumeOpenThread` (clicks the inbox row).
+4. **Never `webView.load()` a thread URL while the page is on the messages
+   pages** (`ThreadURL.isMessagesSurface`). A full reload empties the inbox
+   DOM and the next snapshot deletes every bubble. Open threads with
+   `__plumeOpenThread` (clicks the inbox row). Off those pages (a Facebook
+   profile or post opened from a chat) there is no inbox to lose, and loading
+   is the only way back.
 5. **Destructive flows click only exact matches.** Delete-chat matches by role
    plus exact, accent-folded label and backs out without clicking anything if
    a step's control is missing. Keep `ThreadDeleteTests` passing.
