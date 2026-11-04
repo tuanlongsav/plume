@@ -1001,6 +1001,15 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             // row could not be clicked, at least point the card at the head
             // of the thread it still shows.
             if (try? result.get()) as? Bool == false {
+                // Off the messages pages (a Facebook profile or post opened
+                // from a chat is same-site and replaces the page) there is no
+                // inbox left for a load to tear down, and no row to click.
+                if !ThreadURL.isMessagesSurface(self.webView.url) {
+                    PlumeTrace.log("  openThread: off the messages pages, loading the thread")
+                    self.webView.load(URLRequest(url: url))
+                    self.settleCard()
+                    return
+                }
                 PlumeTrace.log("  openThread: no row to click")
                 let shown = ThreadURL.id(from: self.webView.url)
                 if let i = self.headIndex(for: shown) {

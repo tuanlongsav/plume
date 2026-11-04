@@ -18,6 +18,8 @@ final class WebViewController: NSViewController {
     private enum ContentState { case splash, main, offline }
     private var contentState: ContentState = .splash
     private var hasLoadedOnce = false
+    /// When `followMessengerSite` last sent the feed on to the chat list.
+    private var lastFeedRedirect: Date?
 
     /// Single in-flight auto-retry, cancellable so a manual retry or a
     /// successful load can't leave a stale reload queued behind it.
@@ -127,7 +129,21 @@ final class WebViewController: NSViewController {
     }
 
     func load() {
-        webView.load(URLRequest(url: Plume.homeURL))
+        webView.load(URLRequest(url: Plume.startURL))
+    }
+
+    /// View ▸ Back to Chats. On facebook.com a link in a chat (a profile, a
+    /// post) is same-site and leaves the window on a page with no chat list.
+    func goToChats() {
+        let onFacebook = ThreadURL.site(of: webView.url) == .facebook
+        webView.load(URLRequest(url: onFacebook ? Plume.facebookMessagesURL : Plume.startURL))
+    }
+
+    /// Facebook's login and security-check pages: nothing to read until the
+    /// user has signed in.
+    var isOnLoginPage: Bool {
+        guard let url = webView.url, ThreadURL.site(of: url) == .facebook else { return false }
+        return ["/login", "/checkpoint", "/two_step_verification"].contains { url.path.hasPrefix($0) }
     }
 
     // MARK: Chrome actions
@@ -549,6 +565,7 @@ extension WebViewController: WKNavigationDelegate {
         setContentState(.main)
         setLoading(false)
         applyWebTheme()
+        followMessengerSite()
         onChromeUpdate?()
         // Deliberately separate from onChromeUpdate: that also fires on a load
         // FAILURE (handleLoadFailure calls it), and anything hooked there for
@@ -556,6 +573,22 @@ extension WebViewController: WKNavigationDelegate {
         let ready = onPageReady
         onPageReady = nil
         ready?()
+    }
+
+    /// Remember which site the account lives on, and take a login that lands
+    /// on the Facebook feed on to the chat list. Full loads only: Facebook's
+    /// own Home link routes in-page, never reaches didFinish, and is respected.
+    private func followMessengerSite() {
+        guard let url = webView.url, let site = ThreadURL.site(of: url) else { return }
+        if ThreadURL.isMessagesSurface(url) {
+            if Preferences.messengerSite != site { Preferences.messengerSite = site }
+            return
+        }
+        guard site == .facebook, ["", "/", "/home.php"].contains(url.path) else { return }
+        // Should /messages/ ever send us back here, this is not a loop.
+        if let last = lastFeedRedirect, Date().timeIntervalSince(last) < 30 { return }
+        lastFeedRedirect = Date()
+        webView.load(URLRequest(url: Plume.facebookMessagesURL))
     }
 
     // A failed *provisional* load (DNS/offline/TLS before any content).

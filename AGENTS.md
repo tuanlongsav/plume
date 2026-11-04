@@ -92,9 +92,12 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
    when the value actually changes (see `__plumeSetStyle`).
 3. **Hook the page by role/ARIA/attributes, never by Messenger's hashed class
    names**, which change constantly.
-4. **Never `webView.load()` a thread URL on a live session.** A full reload
-   empties the inbox DOM and the next snapshot deletes every bubble. Open
-   threads with `__plumeOpenThread` (clicks the inbox row).
+4. **Never `webView.load()` a thread URL while the page is on the messages
+   pages** (`ThreadURL.isMessagesSurface`). A full reload empties the inbox
+   DOM and the next snapshot deletes every bubble. Open threads with
+   `__plumeOpenThread` (clicks the inbox row). Off those pages (a Facebook
+   profile or post opened from a chat) there is no inbox to lose, and loading
+   is the only way back.
 5. **Destructive flows click only exact matches.** Delete-chat matches by role
    plus exact, accent-folded label and backs out without clicking anything if
    a step's control is missing. Keep `ThreadDeleteTests` passing.

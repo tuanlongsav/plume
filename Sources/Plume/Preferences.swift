@@ -108,6 +108,14 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.bubbleFollowDisplay") }
     }
 
+    /// The Messenger site the account was last seen on. Meta moves accounts
+    /// from messenger.com to facebook.com/messages one at a time; once moved,
+    /// starting on messenger.com costs a redirect at best.
+    static var messengerSite: ThreadURL.Site {
+        get { defaults.string(forKey: "plume.surface") == "facebook" ? .facebook : .messenger }
+        set { defaults.set(newValue == .facebook ? "facebook" : "messenger", forKey: "plume.surface") }
+    }
+
     /// Was the app in bubble mode when it was last used? Restored on launch.
     static var bubbleMode: Bool {
         get { defaults.bool(forKey: "plume.bubbleMode") }
