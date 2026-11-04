@@ -32,17 +32,9 @@ final class WebViewController: NSViewController {
     /// common case — don't flash it.
     private var downloadLoadingWork: DispatchWorkItem?
 
-    /// The attachment URL the next main-frame navigation is expected to load.
-    /// Consumed when a navigation starts: if it is this URL, that navigation
-    /// is tagged as `attachmentNavigation`; if not, it is forgotten, so a
-    /// stale expectation can never be pinned on an unrelated load.
-    private var expectingAttachmentURL: URL?
-    /// The main-frame navigation that is an attachment fetch, until its
-    /// response is decided. An attachment rides the main frame, so a redirect
-    /// off the attachment CDN must not be allowed to commit there. Tied to the
-    /// navigation object, not a flag: clicking a second attachment cancels the
-    /// first, and that failure must not clear what the second one set.
-    private var attachmentNavigation: WKNavigation?
+    /// Which main-frame navigation is an attachment fetch: no loading pill
+    /// for it, and its redirect off the CDN is not committed over the inbox.
+    private var attachmentNav = AttachmentNavTracker()
     /// Set while redirecting from Facebook's feed to Messenger (`didFinish`).
     private var triedMessagesFromHome = false
     /// The sidebar row a native right-click menu is currently open for.
@@ -556,7 +548,11 @@ extension WebViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // Every allowed main-frame decision is recorded, so the attachment
+        // expectation always belongs to the navigation that starts next.
+        let mainFrame = navigationAction.targetFrame?.isMainFrame == true
         guard let url = navigationAction.request.url else {
+            if mainFrame { attachmentNav.decided(isAttachment: false) }
             decisionHandler(.allow); return
         }
         // Web content explicitly asked to download (e.g. an <a download> link).
@@ -576,14 +572,13 @@ extension WebViewController: WKNavigationDelegate {
         // Non-web schemes are cancelled, not loaded over the Messenger page.
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
             if Plume.isAttachmentHost(url) {
-                if navigationAction.targetFrame?.isMainFrame != false {
-                    expectingAttachmentURL = url
-                }
+                if mainFrame { attachmentNav.decided(isAttachment: true) }
                 decisionHandler(.allow); return
             }
             Self.openExternally(url)
             decisionHandler(.cancel); return
         }
+        if mainFrame { attachmentNav.decided(isAttachment: false) }
         decisionHandler(.allow)
     }
 
@@ -604,9 +599,9 @@ extension WebViewController: WKNavigationDelegate {
             // navigation. Inline HTML and images/video from fbcdn.net render as
             // before.
             // A main-frame response belongs to the latest main-frame
-            // navigation, the only one `attachmentNavigation` can name.
-            let pendingAttachment = attachmentNavigation != nil && navigationResponse.isForMainFrame
-            if navigationResponse.isForMainFrame { attachmentNavigation = nil }
+            // navigation, the only one the tracker can have tagged.
+            let pendingAttachment = navigationResponse.isForMainFrame
+                && attachmentNav.responseForMainFrame()
             if dispositionType == "attachment"
                 || (!navigationResponse.canShowMIMEType && navigationResponse.isForMainFrame)
                 || (Plume.isAttachmentHost(url) && navigationResponse.isForMainFrame) {
@@ -621,7 +616,7 @@ extension WebViewController: WKNavigationDelegate {
                 decisionHandler(.cancel); return
             }
         }
-        if navigationResponse.isForMainFrame { attachmentNavigation = nil }
+        if navigationResponse.isForMainFrame { _ = attachmentNav.responseForMainFrame() }
         decisionHandler(.allow)
     }
 
@@ -645,23 +640,10 @@ extension WebViewController: WKNavigationDelegate {
         // An attachment navigation becomes a download almost immediately —
         // don't flash the loading pill for it. Any other navigation starting
         // supersedes whatever attachment fetch was in flight.
-        let expected = expectingAttachmentURL
-        expectingAttachmentURL = nil
-        if navigation === attachmentNavigation { return }
-        if let expected, Self.sameResource(webView.url, expected) {
-            attachmentNavigation = navigation
-            return
-        }
-        attachmentNavigation = nil
+        if let navigation, attachmentNav.started(ObjectIdentifier(navigation)) { return }
         // First paint is covered by the splash; later navigations (reload /
         // retry) get the non-blocking loading overlay.
         if hasLoadedOnce { setLoading(true) }
-    }
-
-    /// Host and path: what the provisional URL keeps of the request.
-    private static func sameResource(_ a: URL?, _ b: URL) -> Bool {
-        guard let a else { return false }
-        return a.host?.lowercased() == b.host?.lowercased() && a.path == b.path
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -706,7 +688,7 @@ extension WebViewController: WKNavigationDelegate {
         let ns = error as NSError
         // Only the failing navigation's own state ends with it: a superseded
         // attachment fetch fails AFTER its successor was already tagged.
-        if let navigation, navigation === attachmentNavigation { attachmentNavigation = nil }
+        if let navigation { attachmentNav.failed(ObjectIdentifier(navigation)) }
         setLoading(false)   // any nav ending clears the loading pill
         // Not real Messenger-connectivity failures — don't show offline:
         //  • a user-cancelled navigation (a link handed to the browser, or one
@@ -763,7 +745,9 @@ extension WebViewController: WKUIDelegate {
             // Attachment-CDN URLs load in the main frame so the response
             // handler converts them to a download (without replacing the
             // current document); suppress the loading pill for them.
-            attachmentNavigation = webView.load(navigationAction.request)
+            if let navigation = webView.load(navigationAction.request) {
+                attachmentNav.loadedDirectly(ObjectIdentifier(navigation))
+            }
             return nil
         }
         if Plume.opensInPopup(url) {

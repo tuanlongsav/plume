@@ -60,7 +60,7 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `WebViewController.swift` | `WKWebView` config, navigation, downloads, badge, script-message bridge |
 | `InjectedScript.swift` | All JS/CSS injected into the page (notification bridge, conversation snapshot, theatre detection, delete-chat flow) |
 | `ChatBubbleController.swift` | Bubble mode: chain physics (`Chain`, `CADisplayLink`), card panel, conversation picker, multi-display follow |
-| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift` | Small pure-logic helpers, unit-tested |
+| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift` | Small pure-logic helpers, unit-tested |
 | `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
 | `Preferences.swift` | `UserDefaults`-backed settings |
 | `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |
