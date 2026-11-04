@@ -414,17 +414,30 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         NSApp.terminate(nil)
     }
 
+    /// Same algorithm as Scripts/swap_bundle.swift: afterwards `staged` holds
+    /// the old app, which the relaunch script deletes.
     private static func swap(_ staged: URL, into installed: URL) throws {
-        let rc = staged.withUnsafeFileSystemRepresentation { from in
-            installed.withUnsafeFileSystemRepresentation { to in
-                renamex_np(from, to, UInt32(RENAME_SWAP))
+        let from = staged.path, to = installed.path, old = staged.path + ".old"
+        // errno is read straight after the call: anything in between (the
+        // URL→path bridging included) may overwrite it.
+        let swapError: Int32 = from.withCString { f in
+            to.withCString { t in
+                renamex_np(f, t, UInt32(RENAME_SWAP)) == 0 ? 0 : errno
             }
         }
-        if rc == 0 { return }
-        // Some file systems (e.g. network volumes) cannot swap; fall back to
-        // a replace, which is not atomic but keeps a consistent result.
-        guard errno == ENOTSUP || errno == EINVAL else { throw UpdateFailure.installFailed }
-        _ = try FileManager.default.replaceItemAt(installed, withItemAt: staged)
+        if swapError == 0 { return }
+        guard swapError == ENOTSUP || swapError == EINVAL else {
+            throw UpdateFailure.installFailed
+        }
+        // No RENAME_SWAP here (some network volumes): two renames, each
+        // atomic, with the old app put back if the second one fails.
+        guard rename(to, old) == 0 else { throw UpdateFailure.installFailed }
+        guard rename(from, to) == 0 else {
+            _ = rename(old, to)
+            throw UpdateFailure.installFailed
+        }
+        // Installed. The old app is at `old`, inside the staging dir, which
+        // the relaunch script (or the next launch) removes with it.
     }
 
     // MARK: Housekeeping
