@@ -83,6 +83,23 @@ final class WebFloorTests: XCTestCase {
         XCTAssertEqual(JSScan.scan("var r = a / b / c;").regexFlags, [])
         XCTAssertEqual(JSScan.scan("return /x/gi.test(s);").regexFlags, ["gi"])
     }
+
+    /// Package.swift sets the minimum macOS; the build derives the rest from
+    /// it. The prose that tells people what they need must say the same.
+    func testMinimumMacOSIsStatedConsistently() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func read(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let package = try read("Package.swift")
+        guard let range = package.range(of: #"\.macOS\("([0-9.]+)"\)"#, options: .regularExpression)
+        else { return XCTFail("Package.swift: no .macOS(\"X.Y\") platform") }
+        let floor = String(package[range]).replacingOccurrences(of: ".macOS(\"", with: "")
+            .replacingOccurrences(of: "\")", with: "")
+        XCTAssertTrue(try read("README.md").contains("macOS \(floor)"), "README.md does not say macOS \(floor)")
+        XCTAssertTrue(try read("AGENTS.md").contains("Minimum macOS \(floor)"), "AGENTS.md does not say macOS \(floor)")
+    }
 }
 
 /// Splits JavaScript into code and the parts that are not code (strings,

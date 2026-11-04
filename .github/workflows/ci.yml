@@ -64,6 +64,17 @@ jobs:
       - name: Release build
         # A stamped version exercises the version rule; the build number must
         # be MAJOR*10000 + MINOR*100, the same rule AppVersionTests pins.
+        # Universal, like a release. The plist's minimum macOS must be every
+        # slice's minos (build_app.sh derives it), the recorded SDK the pinned
+        # 14.0, and nothing may load from @rpath: no Swift library is embedded.
         run: |
-          PLUME_VERSION=1.2 bash Scripts/build_app.sh release
-          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' build/Plume.app/Contents/Info.plist)" = 10200 ]
+          PLUME_VERSION=1.2 PLUME_UNIVERSAL=1 bash Scripts/build_app.sh release
+          P=build/Plume.app/Contents
+          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' $P/Info.plist)" = 10200 ]
+          MIN="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' $P/Info.plist)"
+          INFO="$(vtool -show-build $P/MacOS/Plume)"
+          echo "$INFO"
+          [ "$(awk '$1 == "minos" { print $2 }' <<<"$INFO" | sort -u)" = "$MIN" ]
+          [ "$(awk '$1 == "sdk" { print $2 }' <<<"$INFO" | sort -u)" = 14.0 ]
+          LIBS="$(otool -L $P/MacOS/Plume)"
+          if grep -q '@rpath/' <<<"$LIBS"; then echo "loads from @rpath:"; echo "$LIBS"; exit 1; fi

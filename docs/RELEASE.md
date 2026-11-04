@@ -111,7 +111,13 @@ Tuan (U4B264GM2B)* trong keychain, notarytool profile `vkey`
    bash Scripts/release.sh 1.1 --no-publish
    ```
    Ngày trong `CHANGELOG.md` phải đúng từ bước này: sửa gì sau đó là commit
-   khác, ứng viên không còn hợp lệ.
+   khác, ứng viên không còn hợp lệ. Script từ chối tiêu đề chưa có ngày
+   (`## 1.1 — YYYY-MM-DD`).
+
+   Mức macOS tối thiểu lấy từ `Package.swift`. Nếu bản mới *nâng* mức này
+   so với bản trước, `release.sh` từ chối phát hành trừ khi thêm
+   `--raise-floor`: máy nằm giữa hai mức sẽ ngừng nhận cập nhật, nên ghi rõ
+   trong CHANGELOG bản nào là bản cuối cho họ.
 5. Thử `build/Plume-1.1.dmg` trên máy thật (checklist ở mục 4).
 6. Phát hành **đúng các file đã thử**, không build lại:
    ```bash
@@ -165,6 +171,21 @@ Cài `build/Plume-X.Y.dmg` (kéo vào Applications, thay bản cũ). Nếu tài 
 - [ ] Nhờ người khác nhắn tin khi Plume đang ẩn: có thông báo; bấm vào thông báo mở đúng đoạn chat (cả ở chế độ cửa sổ lẫn bong bóng).
 - [ ] Số trên Dock bằng số đoạn chat chưa đọc, về 0 khi đã đọc hết.
 - [ ] Gửi một link có chữ tiếng Việt và bấm vào: mở đúng trang trong trình duyệt.
+
+Trên máy **macOS 13.x** (mức thấp nhất được hỗ trợ là 13.3), thêm:
+
+- [ ] Plume ▸ Giới thiệu: dòng "WebKit … · macOS 13.x" hiện đúng.
+- [ ] Trang Messenger/Facebook hiện đầy đủ, không trắng, không báo "Your request couldn't be processed".
+- [ ] Bong bóng kéo mượt, nảy về chỗ cũ; rê chuột phóng to như Dock.
+- [ ] Chuột phải chip ứng dụng: menu hiện *trên* bong bóng, không bị che.
+- [ ] Badge đỏ trên bong bóng không bị cắt góc; nút "Thử lại" (khi mất mạng) còn viền sáng.
+- [ ] Bong bóng nổi trên một app khác đang toàn màn hình và trong Stage Manager.
+- [ ] Gọi thoại/video: macOS hỏi quyền micro/camera, cuộc gọi chạy.
+- [ ] Kiểm tra cập nhật thủ công: báo đúng (đã mới nhất, hoặc "bản mới nhất cho máy này").
+
+Vòng khung hình của macOS 13 (Timer) thử được trên máy mới hơn bằng bản Debug:
+`defaults write com.htl.plume plume.debugTimerFrames -bool YES`, rồi
+`defaults delete com.htl.plume plume.debugTimerFrames` khi xong.
 
 ## 5. Kiểm tra sau phát hành
 

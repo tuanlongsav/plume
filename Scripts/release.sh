@@ -136,6 +136,12 @@ awk -v head="## $VERSION" '
     on { print }
 ' CHANGELOG.md > "$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || die "CHANGELOG.md has no '## $VERSION' section with text under it."
+# The heading ships with the release (and a candidate is what ships), so a
+# placeholder such as "chưa phát hành" must have become a date by now.
+if [[ "$SKIP_NOTARIZE" -eq 0 ]]; then
+    grep -qE "^## ${VERSION//./\\.} — [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md \
+        || die "CHANGELOG.md: date the heading, '## $VERSION — YYYY-MM-DD' (the day the candidate is built)."
+fi
 
 if [[ "$PUBLISH" -eq 1 ]]; then
     [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean."
