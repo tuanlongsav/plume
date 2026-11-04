@@ -31,4 +31,13 @@ final class UnreadCountTests: XCTestCase {
         XCTAssertEqual(WebViewController.badgeLabel(99), "99")
         XCTAssertEqual(WebViewController.badgeLabel(100), "99+")
     }
+
+    // On facebook.com the title is only a trigger (its count includes
+    // notifications); these pin what the parser itself does with those titles.
+    func testFacebookTitleShapes() {
+        XCTAssertEqual(WebViewController.unreadCount(from: "(3) Facebook"), 3)
+        XCTAssertEqual(WebViewController.unreadCount(from: "(3) Messenger | Facebook"), 3)
+        XCTAssertEqual(WebViewController.unreadCount(from: "Facebook"), 0)
+        XCTAssertEqual(WebViewController.unreadCount(from: "An messaged you"), 0)
+    }
 }

@@ -20,6 +20,9 @@ final class WebViewController: NSViewController {
     private var hasLoadedOnce = false
     /// When `followMessengerSite` last sent the feed on to the chat list.
     private var lastFeedRedirect: Date?
+    /// The count the Dock badge shows now.
+    private var badgeCount = 0
+    private var zeroRecheck: DispatchWorkItem?
 
     /// Single in-flight auto-retry, cancellable so a manual retry or a
     /// successful load can't leave a stale reload queued behind it.
@@ -213,7 +216,35 @@ final class WebViewController: NSViewController {
     // MARK: Badge
 
     private func updateBadgeFromTitle(_ title: String?) {
-        setBadge(Self.unreadCount(from: title))
+        guard ThreadURL.site(of: webView.url) == .facebook else {
+            setBadge(Self.unreadCount(from: title))
+            return
+        }
+        refreshFacebookBadge()
+    }
+
+    /// facebook.com's "(N)" also counts notifications and friend requests,
+    /// which Plume cannot clear, and a "<name> messaged you" title flashes in
+    /// and out of it. So there the title (or a message notification) is only
+    /// the trigger: count unread chats in the list, on demand, no timer.
+    private func refreshFacebookBadge(confirmingZero: Bool = false) {
+        webView.evaluateJavaScript("window.__plumeUnreadCount ? window.__plumeUnreadCount() : -1") {
+            [weak self] result, _ in
+            guard let self, let n = (result as? NSNumber)?.intValue, n >= 0 else { return }
+            if n == 0, self.badgeCount > 0, !confirmingZero {
+                // A list in the middle of re-rendering reads as empty. Look
+                // once more before clearing a badge the user has not seen go.
+                self.zeroRecheck?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.refreshFacebookBadge(confirmingZero: true)
+                }
+                self.zeroRecheck = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+                return
+            }
+            self.zeroRecheck?.cancel()
+            self.setBadge(n)
+        }
     }
 
     // Messenger encodes the unread count as a *leading* "(N)" in the page
@@ -236,7 +267,9 @@ final class WebViewController: NSViewController {
 
     // Called on the main thread (from title KVO); no dispatch needed.
     private func setBadge(_ count: Int) {
-        NSApp.dockTile.badgeLabel = Self.badgeLabel(count)
+        badgeCount = count
+        let label = Self.badgeLabel(count)
+        if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
         // The chat bubble badges itself from this instead of watching the DOM.
         NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,
                                         userInfo: ["count": count])
@@ -471,6 +504,9 @@ extension WebViewController {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        // A new message may not change the title (facebook.com), so it is a
+        // trigger of its own for the badge and the bubble chain.
+        updateBadgeFromTitle(webView.title)
     }
 
     func handleNotifyClose(_ body: [String: Any]) {

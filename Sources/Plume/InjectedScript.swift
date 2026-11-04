@@ -39,6 +39,43 @@ enum InjectedScript {
         }
         return inList.length ? inList : other;
     }
+    // Whether a chat-list row is unread. The accessible label says so in some
+    // locales only (never on a Vietnamese UI). Messenger also renders an
+    // unread row's preview semibold, and facebook.com adds a visually hidden
+    // screen-reader note inside an `html-span` (a stable class, not a hashed
+    // one) that other hidden notes ("Online now", "Sent") do not sit in.
+    function plumeRowUnread(row, preview) {
+        if (row.querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) return true;
+        try {
+            if (preview === undefined) {
+                var lines = (row.innerText || row.textContent || "").split("\n")
+                    .map(function (x) { return x.trim(); }).filter(Boolean);
+                preview = (lines[1] || "").slice(0, 80);
+            }
+            if (preview) {
+                var probe = preview.slice(0, 12);
+                var nodes = row.querySelectorAll('[dir="auto"], span');
+                for (var q = 0; q < nodes.length; q++) {
+                    var txt = (nodes[q].textContent || "").trim();
+                    if (!txt || txt.indexOf(probe) !== 0) continue;
+                    var fw = parseInt(window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
+                    if (fw >= 600) return true;
+                    break;
+                }
+            }
+            var notes = row.querySelectorAll('.html-span > span, .html-span > div');
+            for (var h = 0; h < notes.length; h++) {
+                var n = notes[h];
+                if (n.childElementCount !== 0 || !(n.textContent || "").trim()) continue;
+                var cs = window.getComputedStyle(n);
+                if (cs.position === "absolute"
+                    && (cs.width === "1px" || cs.height === "1px" || cs.overflow === "hidden")) {
+                    return true;
+                }
+            }
+        } catch (e) {}
+        return false;
+    }
     """#
 
     /// Shared theatre detector. Photo/video lightbox only — not emoji,
@@ -461,9 +498,7 @@ enum InjectedScript {
                     var start = Math.max(0, selectedIndex());
                     for (var s = 1; s <= r.length; s++) {
                         var idx = (start + s) % r.length;
-                        if (r[idx].querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) {
-                            return click(r[idx]);
-                        }
+                        if (plumeRowUnread(r[idx])) return click(r[idx]);
                     }
                     return false;
                 },
@@ -568,27 +603,7 @@ enum InjectedScript {
                     }
                     label = String(label).trim().slice(0, 60);
 
-                    // Unread. The accessible label carries it in some locales
-                    // and not others — on a Vietnamese UI it never appears, so
-                    // this also reads the styling Messenger actually uses: an
-                    // unread row's preview line is rendered semibold, a read
-                    // one regular.
-                    var unread = !!r.querySelector(
-                        '[aria-label*="unread" i], [aria-label*="chưa đọc" i]');
-                    if (!unread && preview) {
-                        try {
-                            var probe = preview.slice(0, 12);
-                            var nodes = r.querySelectorAll('[dir="auto"], span');
-                            for (var q = 0; q < nodes.length; q++) {
-                                var txt = (nodes[q].textContent || "").trim();
-                                if (!txt || txt.indexOf(probe) !== 0) continue;
-                                var fw = parseInt(
-                                    window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
-                                if (fw >= 600) unread = true;
-                                break;
-                            }
-                        } catch (e) {}
-                    }
+                    var unread = plumeRowUnread(r, preview);
                     out.push({
                         href: link.href,
                         name: label,
@@ -619,6 +634,17 @@ enum InjectedScript {
                 }
             } catch (e) {}
             return false;
+        };
+
+        // Unread chats in the list, for the Dock badge on facebook.com, whose
+        // title count also takes in notifications Plume cannot clear. -1 when
+        // the list cannot be read, so native code keeps the badge it has.
+        window.__plumeUnreadCount = function () {
+            try {
+                var rows = plumeListRows(), n = 0;
+                for (var i = 0; i < rows.length; i++) if (plumeRowUnread(rows[i])) n++;
+                return n;
+            } catch (e) { return -1; }
         };
 
         // --- Right-click a sidebar row → native menu (delete chat) ------
@@ -797,6 +823,18 @@ enum InjectedScript {
     /// conversation is removed from the DOM, so a narrow clipped webview can
     /// never host theatre/forward overlays. The card itself must be that wide;
     /// these rules only hide the leftover sidebar columns.
+    ///
+    /// On facebook.com/messages the page also carries Facebook's top bar
+    /// (`[role=banner]`) and reserves its height through `--header-height`,
+    /// which Facebook declares on `html` and on its theme classes
+    /// (`__fb-light-mode` / `__fb-dark-mode`, stable names, not hashed ones).
+    /// Hiding the bar alone would leave a blank band. Each concern is a rule of
+    /// its own, so a selector one engine rejects cannot take the others down.
+    /// The variables differ from the custom properties the performance note
+    /// warns about: they sit on `html` and two theme roots, not on every node,
+    /// and change only when the card toggles this class. While
+    /// `__plumeOpenThreadRetry` lifts the class the bar briefly shows; that is
+    /// accepted.
     static let cardThreadCSS = """
     html.plume-card-thread [role="navigation"]:not(:has([role="main"])) {
       display: none !important;
@@ -812,6 +850,15 @@ enum InjectedScript {
       max-width: none !important;
       flex: 1 1 auto !important;
       min-width: 0 !important;
+    }
+    html.plume-card-thread [role="banner"]:not([role="main"] *) {
+      display: none !important;
+    }
+    html.plume-card-thread,
+    html.plume-card-thread .__fb-light-mode,
+    html.plume-card-thread .__fb-dark-mode {
+      --header-height: 0px !important;
+      --messenger-card-spacing: 0px !important;
     }
     """
 

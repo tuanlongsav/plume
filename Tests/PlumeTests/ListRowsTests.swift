@@ -49,4 +49,45 @@ final class ListRowsTests: XCTestCase {
         """)
         XCTAssertEqual(ids, ["a", "b"])
     }
+
+    // Unread has three tells, and a Vietnamese UI shows only the last two.
+    func testRowUnreadSignals() {
+        let ctx = JSContext()!
+        ctx.evaluateScript("""
+        var STYLE = {};   // node id -> computed style
+        var window = { getComputedStyle: function (n) { return STYLE[n.id] || {}; } };
+        var document = { querySelectorAll: function () { return []; } };
+        function node(id, text, kids) { return { id: id, textContent: text, childElementCount: kids || 0 }; }
+        function row(o) {
+            return {
+                innerText: o.text || "",
+                querySelector: function (sel) { return o.labelled && sel.indexOf("unread") >= 0 ? {} : null; },
+                querySelectorAll: function (sel) {
+                    return sel.indexOf("html-span") >= 0 ? (o.notes || []) : (o.spans || []);
+                }
+            };
+        }
+        """)
+        ctx.evaluateScript(InjectedScript.listRowsJS)
+        func unread(_ js: String) -> Bool { ctx.evaluateScript(js)!.toBool() }
+
+        XCTAssertTrue(unread("plumeRowUnread(row({ labelled: true }))"))
+        XCTAssertTrue(unread("""
+            STYLE.p = { fontWeight: "700" };
+            plumeRowUnread(row({ text: "An\\nHẹn mai nhé", spans: [node("p", "Hẹn mai nhé")] }))
+            """))
+        XCTAssertFalse(unread("""
+            STYLE.q = { fontWeight: "400" };
+            plumeRowUnread(row({ text: "An\\nHẹn mai nhé", spans: [node("q", "Hẹn mai nhé")] }))
+            """))
+        XCTAssertTrue(unread("""
+            STYLE.h = { position: "absolute", width: "1px", height: "1px", overflow: "hidden" };
+            plumeRowUnread(row({ text: "An\\nOk", notes: [node("h", "Tin nhắn chưa đọc")] }))
+            """))
+        // A hidden note that has children of its own is a container, not the note.
+        XCTAssertFalse(unread("""
+            STYLE.c = { position: "absolute", width: "1px" };
+            plumeRowUnread(row({ text: "An\\nOk", notes: [node("c", "x", 2)] }))
+            """))
+    }
 }
