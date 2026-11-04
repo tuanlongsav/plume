@@ -105,14 +105,24 @@ Tuan (U4B264GM2B)* trong keychain, notarytool profile `vkey`
    ```
    Phần này thành release notes, hiện ngay trong hộp thoại cập nhật của app.
 3. Commit, push `main`.
-4. Chạy thử, không publish:
+4. Build bản ứng viên (notarize thật, không publish). Từ tree sạch trùng
+   `origin/main`, script ghi commit vào `build/Plume-1.1.commit`:
    ```bash
    bash Scripts/release.sh 1.1 --no-publish
    ```
-5. Phát hành thật:
+   Ngày trong `CHANGELOG.md` phải đúng từ bước này: sửa gì sau đó là commit
+   khác, ứng viên không còn hợp lệ.
+5. Thử `build/Plume-1.1.dmg` trên máy thật (checklist ở mục 4).
+6. Phát hành **đúng các file đã thử**, không build lại:
    ```bash
-   bash Scripts/release.sh 1.1
+   bash Scripts/release.sh 1.1 --from-build
    ```
+   Script kiểm: commit ghi lúc build trùng HEAD; DMG và app trong zip đã
+   staple; app đúng requirement Developer ID mà updater đòi; manifest khớp zip
+   (độ dài, SHA-256) và chữ ký Ed25519 đúng khoá các bản đã cài tin.
+
+   `bash Scripts/release.sh 1.1` (không cờ) vẫn build và phát hành trong một
+   lần, khi không cần thử trước.
 
 `release.sh` làm và kiểm từng bước, dừng ngay khi một bước sai:
 
@@ -136,7 +146,27 @@ Asset của mỗi release:
 manifest trên GitHub không còn khớp và app từ chối. Lỗi sau khi publish thì
 phát hành version kế tiếp.
 
-## 4. Kiểm tra sau phát hành
+## 4. Kiểm tra bản ứng viên trên máy thật
+
+Cài `build/Plume-X.Y.dmg` (kéo vào Applications, thay bản cũ). Nếu tài khoản
+đã bị Meta chuyển sang Facebook thì kiểm thêm phần Facebook.
+
+- [ ] Mở app: không có cảnh báo Gatekeeper; Plume ▸ Giới thiệu hiện đúng version.
+- [ ] Đăng nhập (Facebook nếu được hỏi): app tự về trang Đoạn chat, không đứng ở feed.
+- [ ] Bấm sang một trang Facebook khác (logo, hồ sơ) rồi Xem ▸ Về Đoạn chat (⇧⌘H).
+- [ ] ⌘1…⌘9, ⌃Tab/⌃⇧Tab, ⌘K (con trỏ vào ô tìm *đoạn chat*, không phải "Tìm trên Facebook").
+- [ ] Cửa sổ ▸ Bong bóng (⌥⌘B): vào được bong bóng, đúng các người gần nhất.
+- [ ] Bấm từng bong bóng: card mở đúng người, không có thanh xanh Facebook hay khoảng trống phía trên.
+- [ ] Đổi qua lại vài bong bóng; mở danh sách (chip app) và chọn một người khác.
+- [ ] Ảnh trong card: card không tự phóng to toàn màn hình khi chỉ đang xem cuộc trò chuyện.
+- [ ] Trong card, bấm vào tên/ảnh đại diện một người (mở hồ sơ), rồi bấm một bong bóng khác: card về lại đúng cuộc trò chuyện.
+- [ ] Mở một ứng dụng khác ở chế độ toàn màn hình: bong bóng vẫn nổi bên trên.
+- [ ] Chuột phải một hàng trong danh sách ▸ Xoá đoạn chat… (dùng một đoạn chat thử): xoá được, hoặc báo lỗi mà không xoá gì.
+- [ ] Nhờ người khác nhắn tin khi Plume đang ẩn: có thông báo; bấm vào thông báo mở đúng đoạn chat (cả ở chế độ cửa sổ lẫn bong bóng).
+- [ ] Số trên Dock bằng số đoạn chat chưa đọc, về 0 khi đã đọc hết.
+- [ ] Gửi một link có chữ tiếng Việt và bấm vào: mở đúng trang trong trình duyệt.
+
+## 5. Kiểm tra sau phát hành
 
 - Mở một bản cũ hơn (Developer ID, trong `/Applications`) ▸ Plume ▸ Kiểm tra
   cập nhật… → hộp thoại hiện bản mới với release notes.
@@ -162,7 +192,7 @@ Máy đang dùng bản đó cài tay một lần: mở `Plume-X.Y.dmg` và kéo 
 Applications. Từ đó trở đi máy tự cập nhật. `install.sh` sẽ từ chối ghi đè bản
 phát hành này (`PLUME_REPLACE_RELEASE=1` để ép).
 
-## 5. Lỗi hay gặp
+## 6. Lỗi hay gặp
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|

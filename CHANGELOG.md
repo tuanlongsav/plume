@@ -4,6 +4,16 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
+## 1.1 — 2026-11-04
+
+- Chạy được với tài khoản Meta đã chuyển Messenger sang Facebook
+  (facebook.com/messages): danh sách đoạn chat, chế độ bong bóng, phím tắt
+  đoạn chat và xoá đoạn chat. Sau khi đăng nhập Facebook, Plume tự về trang
+  Đoạn chat; menu Xem ▸ Về Đoạn chat (⇧⌘H) đưa về đó bất cứ lúc nào.
+- Trên Facebook, số trên biểu tượng Dock đếm các đoạn chat chưa đọc, không
+  tính thông báo của Facebook.
+- Bong bóng hiện được trên ứng dụng khác đang toàn màn hình (macOS 14).
+
 ## 1.0 — 2026-11-04
 
 - Bản phát hành đầu tiên qua GitHub Releases.

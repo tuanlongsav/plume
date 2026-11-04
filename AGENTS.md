@@ -11,8 +11,9 @@ file from Claude; Gemini CLI reads it through `.gemini/settings.json`.
 
 ## Project
 
-A native macOS client for Facebook Messenger: `messenger.com` inside the
-system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
+A native macOS client for Facebook Messenger: `messenger.com`, or
+`facebook.com/messages` for accounts Meta has moved there (from April 2026),
+inside the system `WKWebView`, with native chrome, notifications, dock badge, PDF viewer,
 an Android-style "chat heads" bubble mode and a self-updater fed by GitHub
 Releases. Pure Swift + AppKit, no runtime dependencies (the updater uses only
 CryptoKit and Security, which ship with macOS).
@@ -31,7 +32,7 @@ CryptoKit and Security, which ship with macOS).
 | Build the `.app` | `bash Scripts/build_app.sh release` → `build/Plume.app` (`debug` also works) |
 | Build and install/update in `/Applications` | `bash Scripts/install.sh` (a local `0.0.0` build; refuses to replace an installed release unless `PLUME_REPLACE_RELEASE=1`) |
 | Developer ID signed + notarized `Plume-X.Y.dmg` and updater `Plume-X.Y.zip` | `bash Scripts/release_sign.sh X.Y` (needs the cert and the `vkey` notarytool profile) |
-| Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y` (`--no-publish` for a dry run); steps in `docs/RELEASE.md` |
+| Publish a release to GitHub (build, Ed25519 manifest, tag, `gh release create`, verify) | `bash Scripts/release.sh X.Y --no-publish` builds a notarized candidate; after testing it, `bash Scripts/release.sh X.Y --from-build` publishes exactly those files. Steps in `docs/RELEASE.md` |
 | Update-signing key / signatures | `swift Scripts/update_sign.swift keygen\|pubkey\|sign\|verify …` |
 | Regenerate the icon | `bash Scripts/make_icon.sh` (`build_app.sh` runs it when `Resources/Plume.icns` is missing; the `.icns` is generated, not committed) |
 
@@ -64,7 +65,7 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `ChatBubbleController.swift` | Bubble mode controller: chain membership, frame loop (`CADisplayLink`), card, hover, gestures, multi-display follow |
 | `Chain.swift`, `BubbleChipView.swift`, `BubblePanels.swift`, `ConversationPicker.swift`, `BubbleConversation.swift`, `BubbleOverlay.swift` | Bubble-mode parts: chain geometry and springs, one chat head, the card/bubble/tether panels, the conversation list, the snapshot model and avatar cache, overlay level and `ChipMenuLift` |
 | `PlumeTrace.swift` | DEBUG-only multi-display trace log (no-op in release) |
-| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift` | Small pure-logic helpers, unit-tested |
+| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift` | Small pure-logic helpers, unit-tested. `ThreadURL` knows both Messenger sites (`messenger.com/t/…`, `facebook.com/messages/t/…`) and which pages are the chat pages |
 | `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
 | `Preferences.swift` | `UserDefaults`-backed settings |
 | `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |

@@ -1,7 +1,8 @@
 import Foundation
 
 enum Plume {
-    /// The page we wrap. messenger.com serves a full desktop web app.
+    /// The page we wrap. messenger.com serves a full desktop web app; accounts
+    /// Meta has moved to facebook.com start at `facebookMessagesURL` instead.
     static let homeURL = URL(string: "https://www.messenger.com/")!
 
     /// Where Messenger lives for accounts Meta has moved into Facebook
