@@ -346,7 +346,7 @@ enum InjectedScript {
         };
         NativeNotification.prototype.close = function () {
             live.delete(this._id);
-            post("notifyClose", { id: this._id });
+            post("notifyClose", { id: this._id, tag: String(this.tag || "") });
         };
         NativeNotification.prototype.addEventListener = function (type, cb) {
             if (type === "click") this.onclick = cb;

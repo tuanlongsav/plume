@@ -36,6 +36,10 @@ final class WebViewController: NSViewController {
     /// turn into a download — so `didStartProvisionalNavigation` doesn't flash
     /// the "loading" pill for it. Consumed once, when that navigation starts.
     private var expectingAttachmentNav = false
+    /// Set with `expectingAttachmentNav`, but held until the navigation's
+    /// response is decided: an attachment fetch rides the main frame, so a
+    /// redirect off the attachment CDN must not be allowed to commit there.
+    private var attachmentNavPending = false
     /// The sidebar row a native right-click menu is currently open for.
     private var pendingRowDelete: (url: URL, name: String)?
 
@@ -197,7 +201,21 @@ final class WebViewController: NSViewController {
     // MARK: Badge
 
     private func updateBadgeFromTitle(_ title: String?) {
-        setBadge(Self.unreadCount(from: title))
+        // A title with no count (Messenger's "An sent you a message" flash)
+        // keeps the last one; an unchanged count is not news to anyone.
+        guard let count = UnreadTitle.count(from: title), count != lastUnread else { return }
+        lastUnread = count
+        setBadge(count)
+    }
+
+    /// Last count published; nil until the first title that carries one.
+    private var lastUnread: Int?
+
+    /// Tell a newly built bubble chain the current count: titles are only
+    /// published when the count changes, so it may not change again for a while.
+    func republishUnread() {
+        guard let count = lastUnread else { return }
+        setBadge(count)
     }
 
     // Messenger encodes the unread count as a *leading* "(N)" in the page
@@ -205,12 +223,7 @@ final class WebViewController: NSViewController {
     // "(" and the parenthesised run must be all digits — so unrelated
     // parentheses ("Messenger (Work)") never register as unread.
     static func unreadCount(from title: String?) -> Int {
-        guard let title, title.hasPrefix("("),
-              let close = title.firstIndex(of: ")")
-        else { return 0 }
-        let inside = title[title.index(after: title.startIndex)..<close]
-        guard !inside.isEmpty, inside.allSatisfy(\.isNumber) else { return 0 }
-        return Int(inside) ?? 0
+        UnreadTitle.count(from: title) ?? 0
     }
 
     // Called on the main thread (from title KVO); no dispatch needed.
@@ -437,7 +450,10 @@ final class WebViewController: NSViewController {
 // MARK: - Notifications / badge messages from JS
 
 extension WebViewController {
-    func handleNotify(_ body: [String: Any]) {
+    /// `fromPopup`: posted by a call window. Its page counts notification ids
+    /// from 1 like ours does, so a click on it must not be routed to the main
+    /// page's notification with the same number.
+    func handleNotify(_ body: [String: Any], fromPopup: Bool = false) {
         guard let id = body["id"] as? Int else { return }
         let title = body["title"] as? String ?? "Messenger"
         let text = body["body"] as? String ?? ""
@@ -446,20 +462,31 @@ extension WebViewController {
         content.title = title
         content.body = text
         content.sound = .default
-        content.userInfo = ["plumeId": id]
+        if !fromPopup { content.userInfo = ["plumeId": id] }
 
         let request = UNNotificationRequest(
-            identifier: "plume-\(id)",
+            identifier: Self.notificationIdentifier(id: id, tag: body["tag"] as? String,
+                                                    fromPopup: fromPopup),
             content: content,
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
-    func handleNotifyClose(_ body: [String: Any]) {
+    func handleNotifyClose(_ body: [String: Any], fromPopup: Bool = false) {
         guard let id = body["id"] as? Int else { return }
-        UNUserNotificationCenter.current()
-            .removeDeliveredNotifications(withIdentifiers: ["plume-\(id)"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: [Self.notificationIdentifier(id: id, tag: body["tag"] as? String,
+                                                          fromPopup: fromPopup)])
+    }
+
+    /// The web `tag` names a notification that a newer one with the same tag
+    /// replaces (one entry per conversation, updated). Keyed by instance id
+    /// alone, a burst of messages piled up as separate banners.
+    static func notificationIdentifier(id: Int, tag: String?, fromPopup: Bool = false) -> String {
+        let prefix = fromPopup ? "plume-popup-" : "plume-"
+        if let tag, !tag.isEmpty { return prefix + "tag-" + tag }
+        return prefix + "\(id)"
     }
 }
 
@@ -482,7 +509,10 @@ extension WebViewController: WKNavigationDelegate {
         // Non-web schemes are cancelled, not loaded over the Messenger page.
         if navigationAction.navigationType == .linkActivated, !Plume.isInternal(url) {
             if Plume.isAttachmentHost(url) {
-                expectingAttachmentNav = true   // suppress the loading pill
+                if navigationAction.targetFrame?.isMainFrame != false {
+                    expectingAttachmentNav = true   // suppress the loading pill
+                    attachmentNavPending = true
+                }
                 decisionHandler(.allow); return
             }
             Self.openExternally(url)
@@ -507,12 +537,23 @@ extension WebViewController: WKNavigationDelegate {
             // file. Sub-frame heuristics are gated so we don't grab an unrelated
             // navigation. Inline HTML and images/video from fbcdn.net render as
             // before.
+            let pendingAttachment = attachmentNavPending && navigationResponse.isForMainFrame
+            if navigationResponse.isForMainFrame { attachmentNavPending = false }
             if dispositionType == "attachment"
                 || (!navigationResponse.canShowMIMEType && navigationResponse.isForMainFrame)
                 || (Plume.isAttachmentHost(url) && navigationResponse.isForMainFrame) {
                 decisionHandler(.download); return
             }
+            // An attachment link that redirected somewhere renderable (an
+            // expired link's error page, a login checkpoint) would otherwise
+            // commit over the live inbox — and the next bubble snapshot of an
+            // empty inbox deletes every bubble (AGENTS.md rule 4).
+            if pendingAttachment {
+                Self.openExternally(url)
+                decisionHandler(.cancel); return
+            }
         }
+        if navigationResponse.isForMainFrame { attachmentNavPending = false }
         decisionHandler(.allow)
     }
 
@@ -571,6 +612,9 @@ extension WebViewController: WKNavigationDelegate {
 
     private func handleLoadFailure(_ error: Error) {
         let ns = error as NSError
+        // Whatever was pending has ended; neither flag may outlive it.
+        attachmentNavPending = false
+        expectingAttachmentNav = false
         setLoading(false)   // any nav ending clears the loading pill
         // Not real Messenger-connectivity failures — don't show offline:
         //  • a user-cancelled navigation (a link handed to the browser, or one
@@ -628,6 +672,7 @@ extension WebViewController: WKUIDelegate {
             // handler converts them to a download (without replacing the
             // current document); suppress the loading pill for them.
             expectingAttachmentNav = true
+            attachmentNavPending = true
             webView.load(navigationAction.request)
             return nil
         }
@@ -665,7 +710,10 @@ extension WebViewController: WKUIDelegate {
             completionHandler(response == .OK ? panel.urls : nil)
         }
 
-        if let host {
+        // A sheet on a window that is not on screen (the folded card) never
+        // appears, so the page's file input would wait forever — same rule
+        // as `present(_:)`.
+        if let host, host.isVisible {
             // Inherit the card's overlay level so the sheet is not buried under
             // another app's fullscreen content on the same display.
             panel.level = host.level
@@ -687,7 +735,9 @@ extension WebViewController: WKUIDelegate {
                  initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(Plume.isCallOrigin(host: origin.host) ? .grant : .prompt)
+        decisionHandler(Plume.shouldAutoGrantCapture(originHost: origin.host,
+                                                     frameHost: frame.securityOrigin.host)
+                        ? .grant : .prompt)
     }
 }
 
@@ -824,13 +874,17 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         // third-party frame could otherwise post spoofed native banners or
         // pop the delete menu. Only our page's own main frame may.
         let frame = message.frameInfo
-        guard frame.isMainFrame, message.webView === controller?.webView,
+        guard frame.isMainFrame, let controller,
               Plume.isInternal(host: frame.securityOrigin.host),
               let body = message.body as? [String: Any] else { return }
+        // Call windows share this content controller, so their notifications
+        // arrive here too; dropping them left the page told "granted" and the
+        // user told nothing. Only the main page may open the delete menu.
+        let fromPopup = message.webView !== controller.webView
         switch message.name {
-        case "notify":      controller?.handleNotify(body)
-        case "notifyClose": controller?.handleNotifyClose(body)
-        case "rowMenu":     controller?.handleRowMenu(body)
+        case "notify":      controller.handleNotify(body, fromPopup: fromPopup)
+        case "notifyClose": controller.handleNotifyClose(body, fromPopup: fromPopup)
+        case "rowMenu" where !fromPopup: controller.handleRowMenu(body)
         default: break
         }
     }

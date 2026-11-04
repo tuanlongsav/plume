@@ -122,6 +122,8 @@ extension PopupWindowController: WKUIDelegate, WKNavigationDelegate {
                  initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(Plume.isCallOrigin(host: origin.host) ? .grant : .prompt)
+        decisionHandler(Plume.shouldAutoGrantCapture(originHost: origin.host,
+                                                     frameHost: frame.securityOrigin.host)
+                        ? .grant : .prompt)
     }
 }

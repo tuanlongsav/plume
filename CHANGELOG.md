@@ -11,3 +11,8 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
   Tắt trong menu Plume ▸ Tự động kiểm tra cập nhật.
 - Gói cập nhật được ký và kiểm chữ ký trước khi cài; app đã ký Developer ID và
   qua công chứng (notarization) của Apple.
+- ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).
+- Số chưa đọc trên Dock không còn nhấp nháy về 0 khi có tin nhắn mới.
+- Thông báo cùng một đoạn chat gộp làm một thay vì xếp chồng; thông báo từ
+  cửa sổ cuộc gọi nay cũng hiện ra.
+- Mở tệp đính kèm hết hạn không còn làm tải lại Messenger (và mất bong bóng).
