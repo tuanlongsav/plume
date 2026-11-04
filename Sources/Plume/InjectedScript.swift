@@ -388,7 +388,10 @@ enum InjectedScript {
             post("notify", {
                 id: id,
                 title: String(title || ""),
-                body: String(this.body || "")
+                body: String(this.body || ""),
+                // Native keys the banner on it, so a newer notification for
+                // the same thread replaces the last one (and close() finds it).
+                tag: String(this.tag || "")
             });
             // Fire onshow after the caller has had a chance to assign it
             // (the spec delivers it asynchronously, not from the constructor).

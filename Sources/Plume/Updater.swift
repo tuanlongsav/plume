@@ -447,14 +447,19 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         // No RENAME_SWAP here (some network volumes): two renames, each
         // atomic, with the old app put back if the second one fails, where
         // replaceItemAt could fail halfway with nothing to roll back.
-        let from = staged.path, to = installed.path, old = staged.path + ".old"
+        //
+        // The old app waits BESIDE the installed one, never in the staging
+        // dir: a failed install deletes that dir, and if the rollback also
+        // failed it would have held the only Plume left.
+        let from = staged.path, to = installed.path, old = installed.path + ".old"
         guard rename(to, old) == 0 else { throw UpdateFailure.installFailed }
         guard rename(from, to) == 0 else {
             _ = rename(old, to)
             throw UpdateFailure.installFailed
         }
-        // Installed. The old app is at `old`, inside the staging dir, which
-        // the relaunch script (or the next launch) removes with it.
+        // Installed. Move the old app into the staging dir, which the
+        // relaunch script (or the next launch) removes; failing that, now.
+        if rename(old, from) != 0 { try? FileManager.default.removeItem(atPath: old) }
     }
 
     // MARK: Housekeeping
