@@ -200,7 +200,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         if !manual { buttons.append(L.t("Bỏ qua phiên bản này", "Skip This Version")) }
         switch present(L.t("Có bản \(candidate.title)", "\(candidate.title) is available"),
                        candidate.notes.isEmpty ? installed : candidate.notes + "\n\n" + installed,
-                       buttons: buttons) {
+                       buttons: buttons, userInitiated: manual) {
         case .alertFirstButtonReturn:
             Preferences.skippedVersion = nil
             fetchManifest(for: candidate)
@@ -520,14 +520,17 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// never appear. Raised above the `.screenSaver`-level bubbles then.
     /// No buttons given means a single OK.
     @discardableResult
+    /// `userInitiated: false` (the daily check's offer) does not take focus
+    /// from another app on macOS 13, where activation is not cooperative.
     private func present(_ title: String, _ detail: String, buttons: [String] = [],
-                         style: NSAlert.Style = .informational) -> NSApplication.ModalResponse {
+                         style: NSAlert.Style = .informational,
+                         userInitiated: Bool = true) -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.alertStyle = style
         alert.messageText = title
         alert.informativeText = detail
         buttons.forEach { alert.addButton(withTitle: $0) }
-        NSApp.activate()
+        NSApp.plumeActivate(userInitiated: userInitiated)
         if ChatBubbleController.isOpen { alert.window.level = .screenSaver }
         return alert.runModal()
     }

@@ -40,12 +40,12 @@ final class UpdateProgressWindow: NSObject, NSWindowDelegate {
 
     func show() {
         panel.center()
-        NSApp.activate()
+        NSApp.plumeActivate()
         panel.makeKeyAndOrderFront(nil)
     }
 
     func bringToFront() {
-        NSApp.activate()
+        NSApp.plumeActivate()
         panel.makeKeyAndOrderFront(nil)
     }
 

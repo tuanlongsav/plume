@@ -1524,15 +1524,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private var hoverFocus: Int?
     private var lastHoverMouse: NSPoint?
 
-    /// CADisplayLink retains its target and the run loop retains the link, so
-    /// `target: self` is a permanent cycle. The proxy is the only way out.
-    private final class LinkProxy: NSObject {
-        weak var owner: ChatBubbleController?
-        init(_ o: ChatBubbleController) { owner = o }
-        @objc func onFrame(_ link: CADisplayLink) { owner?.tick(link) }
-    }
-    private var link: CADisplayLink?
-    private var linkProxy: LinkProxy?
+    /// The frame clock; see `BubbleFrameDriver`. It calls back through a weak
+    /// reference, so neither a display link nor a timer keeps the controller.
+    private var link: BubbleFrameDriver?
     private var linkScreen: NSScreen?
     private var lastFrame: CFTimeInterval = 0      // 0 = sentinel, not a timestamp
     private var idleFrames = 0
@@ -1567,24 +1561,30 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         arm(on: anchorScreen)
     }
 
-    /// Package.swift pins macOS 14, where `displayLink(target:selector:)` exists
-    /// on NSView, NSWindow *and* NSScreen — so no availability branch and no
-    /// CVDisplayLink. The screen variant is the right host: a view-hosted link
-    /// stops firing when its view is hidden or its panel is ordered out, which
-    /// would freeze the chain mid-animation with nothing to restart it.
+    /// macOS 14+ drives the chain from the display (`DisplayLinkFrameDriver`);
+    /// macOS 13 has no display link on NSScreen and gets a 60 Hz timer.
     private func arm(on screen: NSScreen) {
         link?.invalidate()
-        let proxy = linkProxy ?? LinkProxy(self)
-        linkProxy = proxy
-        let l = screen.displayLink(target: proxy, selector: #selector(LinkProxy.onFrame(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-        // .common, or the chain freezes for the whole drag: a mouse drag runs
-        // the run loop in .eventTracking.
-        l.add(to: .main, forMode: .common)
+        let onFrame: FrameHandler = { [weak self] now, nominal in
+            self?.tick(now: now, nominal: nominal)
+        }
+        if #available(macOS 14.0, *), !Self.forceTimerFrames {
+            link = DisplayLinkFrameDriver(screen: screen, onFrame: onFrame)
+        } else {
+            link = TimerFrameDriver(onFrame: onFrame)
+        }
         lastFrame = 0
-        link = l
         linkScreen = screen
     }
+
+    /// DEBUG only: `defaults write com.htl.plume plume.debugTimerFrames -bool
+    /// YES` runs the macOS 13 frame driver on a newer Mac, so it can be tried
+    /// without one.
+    #if DEBUG
+    private static let forceTimerFrames = UserDefaults.standard.bool(forKey: "plume.debugTimerFrames")
+    #else
+    private static let forceTimerFrames = false
+    #endif
 
     /// Zero-cost idle: no callback, no main-thread wakeup, instant resume.
     /// Never invalidate here, or every hover in and out pays for a fresh link.
@@ -1595,7 +1595,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func teardownLoop() {
         link?.invalidate(); link = nil
-        linkProxy = nil; linkScreen = nil
+        linkScreen = nil
         stopMousePoll()
         mouseMonitors.forEach { NSEvent.removeMonitor($0) }
         mouseMonitors.removeAll()
@@ -1657,17 +1657,15 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         }
     }
 
-    fileprivate func tick(_ link: CADisplayLink) {
+    /// One frame. `now` is in `CACurrentMediaTime()` time, like every other
+    /// timestamp the chain keeps; `nominal` is the expected frame interval,
+    /// used on the first frame after a wake, when there is no previous one.
+    private func tick(now: CFTimeInterval, nominal: CFTimeInterval) {
         // No display to lay out on: rest until `screensChanged` wakes us.
         guard !bubbles.isEmpty, !NSScreen.screens.isEmpty else { park(); return }
 
-        // targetTimestamp deltas, never link.duration: duration is the display's
-        // fastest frame and stays 1/120 on ProMotion even while the link runs at
-        // 60, which would halve every animation. On the first frame after a wake
-        // there is no previous target, so fall back to the nominal interval —
-        // link.timestamp is 0 before the link has ever fired.
-        let now = link.targetTimestamp
-        let nominal = link.targetTimestamp - link.timestamp
+        // Deltas between frames, so the physics runs at the same speed
+        // whatever the frame rate or the driver.
         let raw = lastFrame == 0 ? nominal : now - lastFrame
         lastFrame = now
         let dt = CGFloat(min(max(raw, Double(Chain.dtMin)), Double(Chain.dtMax)))
@@ -2513,5 +2511,90 @@ extension ChatBubbleController {
             menu.addItem(item)
         }
         return menu
+    }
+}
+
+// MARK: - Frame drivers
+
+/// `now` in `CACurrentMediaTime()` time; `nominal` is the expected frame
+/// interval.
+private typealias FrameHandler = (_ now: CFTimeInterval, _ nominal: CFTimeInterval) -> Void
+
+/// What the bubble frame loop needs from a clock: frames until paused (zero
+/// cost while paused, instant resume) and a way to stop for good.
+private protocol BubbleFrameDriver: AnyObject {
+    var isPaused: Bool { get set }
+    func invalidate()
+}
+
+/// macOS 14+: a display link from the chain's screen. The screen variant is
+/// the right host: a view-hosted link stops firing when its view is hidden or
+/// its panel is ordered out, freezing the chain mid-animation with nothing to
+/// restart it. The link retains its target, this driver, which holds nothing
+/// but the handler; `invalidate()` breaks that cycle.
+@available(macOS 14.0, *)
+private final class DisplayLinkFrameDriver: NSObject, BubbleFrameDriver {
+    private var link: CADisplayLink?
+    private let onFrame: FrameHandler
+
+    init(screen: NSScreen, onFrame: @escaping FrameHandler) {
+        self.onFrame = onFrame
+        super.init()
+        let l = screen.displayLink(target: self, selector: #selector(step(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        // .common, or the chain freezes for the whole drag: a mouse drag runs
+        // the run loop in .eventTracking.
+        l.add(to: .main, forMode: .common)
+        link = l
+    }
+
+    var isPaused: Bool {
+        get { link?.isPaused ?? true }
+        set { link?.isPaused = newValue }
+    }
+
+    func invalidate() { link?.invalidate(); link = nil }
+
+    // targetTimestamp deltas, never link.duration: duration is the display's
+    // fastest frame and stays 1/120 on ProMotion even while the link runs at
+    // 60, which would halve every animation. link.timestamp is 0 before the
+    // link has ever fired, which is why the first frame uses `nominal`.
+    @objc private func step(_ link: CADisplayLink) {
+        onFrame(link.targetTimestamp, link.targetTimestamp - link.timestamp)
+    }
+}
+
+/// macOS 13: NSScreen has no display link there. A 60 Hz timer in .common
+/// mode (so it keeps firing through a drag) is less evenly paced than the
+/// display, but the physics takes real time deltas, so motion is the same.
+/// Chosen over CVDisplayLink, whose callbacks can still arrive after
+/// CVDisplayLinkStop and race the link's release on every display change.
+private final class TimerFrameDriver: BubbleFrameDriver {
+    private static let interval: CFTimeInterval = 1.0 / 60.0
+    private var timer: Timer?
+    private let onFrame: FrameHandler
+
+    init(onFrame: @escaping FrameHandler) {
+        self.onFrame = onFrame
+        start()
+    }
+
+    deinit { timer?.invalidate() }
+
+    var isPaused: Bool {
+        get { timer == nil }
+        set { if newValue { invalidate() } else { start() } }
+    }
+
+    func invalidate() { timer?.invalidate(); timer = nil }
+
+    private func start() {
+        guard timer == nil else { return }
+        let t = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
+            self?.onFrame(CACurrentMediaTime(), Self.interval)
+        }
+        t.tolerance = 0.002
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 }

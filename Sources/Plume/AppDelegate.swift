@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         controller.load()
-        NSApp.activate()
+        NSApp.plumeActivate()
         Updater.shared.scheduleLaunchCheck()
     }
 
@@ -115,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 completionHandler()
                 return
             }
-            NSApp.activate()
+            NSApp.plumeActivate()
             window.makeKeyAndOrderFront(nil)
             controller.activateNotification(id: id)
         }
@@ -255,7 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // the one failure this whole arrangement must never produce.
         controller.reclaimWebView()
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSApp.plumeActivate()
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -449,5 +449,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
+    }
+}
+
+extension NSApplication {
+    /// `activate()` is macOS 14+ and cooperative: it yields when another app
+    /// is frontmost and the user did not ask for Plume. macOS 13 has only
+    /// `activate(ignoringOtherApps:)`, where `true` always takes focus, so
+    /// work the user did not start (the daily update check) passes false.
+    func plumeActivate(userInitiated: Bool = true) {
+        if #available(macOS 14.0, *) {
+            activate()
+        } else {
+            activate(ignoringOtherApps: userInitiated)
+        }
     }
 }

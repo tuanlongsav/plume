@@ -60,14 +60,14 @@ final class PDFViewerWindowController: NSWindowController {
             $0.fileURL.standardizedFileURL == url.standardizedFileURL
         }) {
             existing.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            NSApp.plumeActivate()
             return existing
         }
 
         let controller = PDFViewerWindowController(fileURL: url)
         registry.append(controller)
         controller.showWindow(nil)
-        NSApp.activate()
+        NSApp.plumeActivate()
         return controller
     }
 
