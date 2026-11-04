@@ -97,6 +97,7 @@ final class WebViewController: NSViewController {
 
         // KVO the title to keep the dock badge in sync as a fallback.
         wv.addObserver(self, forKeyPath: #keyPath(WKWebView.title), options: .new, context: nil)
+        urlObservation = wv.observe(\.url) { [weak self] _, _ in self?.refreshUnreadSoon() }
         self.webView = wv
 
         // Container: web view + state overlays stacked on top.
@@ -204,14 +205,58 @@ final class WebViewController: NSViewController {
 
     private func updateBadgeFromTitle(_ title: String?) {
         // A title with no count (Messenger's "An sent you a message" flash)
-        // keeps the last one; an unchanged count is not news to anyone.
-        guard let count = UnreadTitle.count(from: title), count != lastUnread else { return }
+        // keeps the last one.
+        if let count = UnreadTitle.count(from: title) { lastTitleCount = count }
+        // facebook.com: the title is not Messenger's count; ask the inbox.
+        if onFacebook {
+            refreshUnreadSoon()
+        } else if let count = lastTitleCount {
+            publishUnread(count)
+        }
+    }
+
+    private var onFacebook: Bool { webView.url.map(Plume.isFacebook) ?? false }
+
+    /// What the title last said (messenger.com's count).
+    private var lastTitleCount: Int?
+    private var unreadRefresh: DispatchWorkItem?
+
+    /// Re-read the unread count from the inbox (facebook.com only), once,
+    /// after things settle. Called on the events that can change it — the
+    /// title, a notification, a thread opened, the app activated — so there is
+    /// no standing work in the page (AGENTS.md rule 2). Messenger marks a
+    /// thread read a moment after it opens, hence the delay.
+    func refreshUnreadSoon(after delay: TimeInterval = 0.8) {
+        guard onFacebook else { return }
+        unreadRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.webView.evaluateJavaScript(
+                "window.__plumeUnreadCount ? window.__plumeUnreadCount() : -1"
+            ) { [weak self] result, _ in
+                guard let self else { return }
+                let dom = (result as? Int).flatMap { $0 >= 0 ? $0 : nil }
+                if let count = UnreadSource.resolve(onFacebook: self.onFacebook,
+                                                    title: self.lastTitleCount, dom: dom) {
+                    self.publishUnread(count)
+                }
+            }
+        }
+        unreadRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// An unchanged count is not news to anyone.
+    private func publishUnread(_ count: Int) {
+        guard count != lastUnread else { return }
         lastUnread = count
         setBadge(count)
     }
 
-    /// Last count published; nil until the first title that carries one.
+    /// Last count published; nil until the first one is known.
     private var lastUnread: Int?
+    /// A thread opened or the inbox route changed: it may have been read.
+    private var urlObservation: NSKeyValueObservation?
 
     /// Tell a newly built bubble chain the current count: titles are only
     /// published when the count changes, so it may not change again for a while.
@@ -465,6 +510,8 @@ extension WebViewController {
     /// page's notification with the same number.
     func handleNotify(_ body: [String: Any], fromPopup: Bool = false) {
         guard let id = body["id"] as? Int else { return }
+        // A new message: the inbox row turns unread a moment later.
+        refreshUnreadSoon(after: 1.2)
         let title = body["title"] as? String ?? "Messenger"
         let text = body["body"] as? String ?? ""
 
@@ -615,6 +662,7 @@ extension WebViewController: WKNavigationDelegate {
         setContentState(.main)
         setLoading(false)
         applyWebTheme()
+        refreshUnreadSoon(after: 1.5)   // the inbox mounts after the document
         onChromeUpdate?()
         // Deliberately separate from onChromeUpdate: that also fires on a load
         // FAILURE (handleLoadFailure calls it), and anything hooked there for

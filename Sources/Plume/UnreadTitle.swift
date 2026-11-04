@@ -25,3 +25,17 @@ enum UnreadTitle {
         return nil
     }
 }
+
+/// Which unread count to show, from the two signals Plume has.
+///
+/// messenger.com writes Messenger's own count into the title, so the title
+/// wins there. facebook.com does not: its title may carry no count, or a
+/// count of Facebook's notifications, so there only the inbox read from the
+/// DOM (`__plumeUnreadCount`) counts; while it is not mounted (a load in
+/// progress) falling back to that title would flash the wrong number.
+/// nil: nothing to go on — keep the last count.
+enum UnreadSource {
+    static func resolve(onFacebook: Bool, title: Int?, dom: Int?) -> Int? {
+        onFacebook ? dom : title
+    }
+}

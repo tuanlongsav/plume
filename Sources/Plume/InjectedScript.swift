@@ -520,6 +520,51 @@ enum InjectedScript {
         // preview IS message content: it is shown in the picker and searched
         // there, and it never leaves the machine. Collapsed bubbles still show
         // no message text — that is what the chat heads are for.
+        // Unread. The accessible label carries it in some locales and not
+        // others — on a Vietnamese UI it never appears, so this also reads the
+        // styling Messenger actually uses: an unread row's preview line is
+        // rendered semibold, a read one regular.
+        function rowUnread(r, preview) {
+            if (r.querySelector('[aria-label*="unread" i], [aria-label*="chưa đọc" i]')) return true;
+            if (!preview) return false;
+            try {
+                var probe = preview.slice(0, 12);
+                var nodes = r.querySelectorAll('[dir="auto"], span');
+                for (var q = 0; q < nodes.length; q++) {
+                    var txt = (nodes[q].textContent || "").trim();
+                    if (!txt || txt.indexOf(probe) !== 0) continue;
+                    var fw = parseInt(window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
+                    return fw >= 600;
+                }
+            } catch (e) {}
+            return false;
+        }
+
+        // The unread count, read from the inbox — on facebook.com the page
+        // title no longer carries Messenger's "(N)", and what it does carry
+        // may count Facebook's own notifications. Unread CONVERSATIONS, as
+        // Messenger's title counted them, among the rows the virtualised list
+        // has mounted (unread threads sort to the top). -1: no inbox rows to
+        // read, so native code keeps what it had. On demand only, like the
+        // snapshot below; native code debounces the callers.
+        window.__plumeUnreadCount = function () {
+            try {
+                var rows = document.querySelectorAll('[role="row"]');
+                var seen = 0, n = 0;
+                for (var i = 0; i < rows.length && seen < 60; i++) {
+                    var r = rows[i];
+                    if (inThread(r)) continue;
+                    var link = r.querySelector('a[role="link"][href]');
+                    if (!link || link.href.indexOf('/t/') === -1) continue;
+                    seen++;
+                    var lines = (r.innerText || r.textContent || "").split("\n")
+                        .map(function (x) { return x.trim(); }).filter(Boolean);
+                    if (rowUnread(r, (lines[1] || "").slice(0, 80))) n++;
+                }
+                return seen ? n : -1;
+            } catch (e) { return -1; }
+        };
+
         window.__plumeConvList = function (limit) {
             var out = [];
             try {
@@ -562,27 +607,7 @@ enum InjectedScript {
                     }
                     label = String(label).trim().slice(0, 60);
 
-                    // Unread. The accessible label carries it in some locales
-                    // and not others — on a Vietnamese UI it never appears, so
-                    // this also reads the styling Messenger actually uses: an
-                    // unread row's preview line is rendered semibold, a read
-                    // one regular.
-                    var unread = !!r.querySelector(
-                        '[aria-label*="unread" i], [aria-label*="chưa đọc" i]');
-                    if (!unread && preview) {
-                        try {
-                            var probe = preview.slice(0, 12);
-                            var nodes = r.querySelectorAll('[dir="auto"], span');
-                            for (var q = 0; q < nodes.length; q++) {
-                                var txt = (nodes[q].textContent || "").trim();
-                                if (!txt || txt.indexOf(probe) !== 0) continue;
-                                var fw = parseInt(
-                                    window.getComputedStyle(nodes[q]).fontWeight, 10) || 400;
-                                if (fw >= 600) unread = true;
-                                break;
-                            }
-                        } catch (e) {}
-                    }
+                    var unread = rowUnread(r, preview);
                     out.push({
                         href: link.href,
                         name: label,

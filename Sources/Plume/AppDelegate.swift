@@ -70,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// so it costs nothing on every activation.
     func applicationDidBecomeActive(_ notification: Notification) {
         Updater.shared.checkIfDue()
+        // Read elsewhere (the phone) while Plume was in the background.
+        controller?.refreshUnreadSoon()
     }
 
     /// Opts into secure coding for restored window state; without it macOS 14

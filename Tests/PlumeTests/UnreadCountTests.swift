@@ -71,3 +71,22 @@ final class PopupNotificationIdentifierTests: XCTestCase {
                           WebViewController.notificationIdentifier(id: 1, tag: "t"))
     }
 }
+
+final class UnreadSourceTests: XCTestCase {
+
+    func testMessengerTrustsTheTitle() {
+        XCTAssertEqual(UnreadSource.resolve(onFacebook: false, title: 3, dom: 1), 3)
+        XCTAssertNil(UnreadSource.resolve(onFacebook: false, title: nil, dom: 1))
+    }
+
+    // facebook.com's title says "Messenger | Facebook" (read as 0) or counts
+    // Facebook notifications; the inbox is what Messenger's count was.
+    func testFacebookTrustsTheInbox() {
+        XCTAssertEqual(UnreadSource.resolve(onFacebook: true, title: 0, dom: 2), 2)
+        XCTAssertEqual(UnreadSource.resolve(onFacebook: true, title: 9, dom: 0), 0)
+        // Inbox not mounted: the title's number may be Facebook's, so keep
+        // the last count rather than show it.
+        XCTAssertNil(UnreadSource.resolve(onFacebook: true, title: 4, dom: nil))
+        XCTAssertNil(UnreadSource.resolve(onFacebook: true, title: nil, dom: nil))
+    }
+}

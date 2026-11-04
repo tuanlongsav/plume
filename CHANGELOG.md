@@ -14,6 +14,8 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
 - Messenger đã chuyển từ messenger.com sang facebook.com/messages: Plume mở
   thẳng trang mới. Thanh trên cùng của Facebook được ẩn, và link sang trang
   Facebook khác (trang cá nhân, bài viết) mở trong trình duyệt.
+- Số chưa đọc trên Dock và bong bóng nay đếm từ danh sách đoạn chat, vì
+  tiêu đề trang facebook.com không còn mang số tin nhắn chưa đọc.
 - ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).
 - Số chưa đọc trên Dock không còn nhấp nháy về 0 khi có tin nhắn mới.
 - Thông báo cùng một đoạn chat gộp làm một thay vì xếp chồng; thông báo từ
