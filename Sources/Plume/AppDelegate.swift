@@ -398,6 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func prevConversation() { controller.previousConversation() }
     @objc private func nextUnread()       { controller.nextUnreadConversation() }
     @objc private func findConversation() { controller.findConversation() }
+    @objc private func newMessage()       { controller.newMessage() }
     @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
     @objc private func deleteConversation() { controller.deleteCurrentConversation() }
     @objc private func zoomInPage()   { controller.setPageZoom(PageZoom.zoomedIn(from: controller.pageZoom)) }
@@ -453,6 +454,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
              #selector(prevConversation), #selector(nextUnread),
              #selector(findConversation):
             return Preferences.shortcuts
+        // The card composes from its own list; a fallback page load here
+        // would empty the list the chain is built from.
+        case #selector(newMessage):
+            return Preferences.shortcuts && !ChatBubbleController.isOpen
         // The bubble card has its own delete, on the picker's rows.
         case #selector(deleteConversation):
             return controller.canDeleteCurrentConversation && !ChatBubbleController.isOpen
@@ -572,6 +577,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         unread.keyEquivalentModifierMask = [.command, .shift]
         unread.target = self
         convMenu.addItem(.separator())
+        convMenu.addItem(withTitle: L.t("Tin nhắn mới", "New Message"),
+            action: #selector(newMessage), keyEquivalent: "n").target = self
         convMenu.addItem(withTitle: L.t("Tìm đoạn chat…", "Find Conversation…"),
             action: #selector(findConversation), keyEquivalent: "k").target = self
         convMenu.addItem(.separator())

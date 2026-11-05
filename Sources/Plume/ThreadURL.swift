@@ -79,4 +79,18 @@ enum ThreadURL {
     static func id(from url: URL?) -> String? {
         canonical(from: url)?.pathComponents.last { $0 != "/" }
     }
+
+    /// The compose page on the site the session lives on (`/new/` on
+    /// messenger.com, `/messages/new/` on facebook.com), for when Messenger's
+    /// own "New message" control cannot be found to click. nil off both sites.
+    static func newMessageURL(from url: URL?) -> URL? {
+        guard let url, let site = site(of: url), let host = url.host?.lowercased() else { return nil }
+        switch site {
+        case .messenger:
+            return URL(string: "https://www.messenger.com/new/")
+        case .facebook:
+            let origin = "https://" + (host == "facebook.com" ? "www.facebook.com" : host)
+            return URL(string: origin + "/messages/new/")
+        }
+    }
 }

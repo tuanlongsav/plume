@@ -10,6 +10,7 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
   macOS 13.0–13.2 cần cập nhật macOS trước.
 - Plume không mời cập nhật lên một bản mà máy của bạn không chạy được.
 - Plume ▸ Giới thiệu Plume ghi phiên bản WebKit và macOS, giúp báo lỗi dễ hơn.
+- ⌘N mở khung soạn tin nhắn mới (menu Đoạn chat).
 - Tuỳ chọn biểu tượng Plume trên thanh menu, kèm số đoạn chat chưa đọc: bấm
   để mở hoặc ẩn Plume, bấm chuột phải để có menu. Khi bật, đóng cửa sổ chính
   Plume vẫn chạy và vẫn báo tin nhắn. Bật trong menu Plume.

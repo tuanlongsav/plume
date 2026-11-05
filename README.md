@@ -31,7 +31,8 @@ older Plume that cannot update itself installs the new DMG by hand once.
 - Calls (and any other window Messenger opens) get a real window of their own
 - Native file picker for attachments; camera/mic granted for calls
 - In-app PDF viewing for attachments (PDFKit); other files reveal in Finder
-- Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find)
+- Conversation keyboard shortcuts (⌘1–9 jump, next/previous, next unread, find,
+  ⌘N new message)
 - Chat bubbles: an Android-style chain of chat heads that floats over every
   Space and full-screen app, with the conversation in a card beside it
 - Updates itself from GitHub Releases: checks once a day, asks before

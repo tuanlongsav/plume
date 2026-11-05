@@ -452,6 +452,22 @@ final class WebViewController: NSViewController {
     func nextUnreadConversation()      { runConvJS("nextUnread()") }
     func findConversation()            { runConvJS("find()") }
 
+    /// Click Messenger's own "New message"; only when the page has none to
+    /// click (list not loaded, or a Facebook page off the messages pages)
+    /// load the compose page. The menu item is off in bubble mode, where a
+    /// load would empty the list the chain is built from (AGENTS.md rule 4).
+    func newMessage() {
+        webView.evaluateJavaScript(
+            "(function(){try{return !!(window.__plumeConv&&window.__plumeConv.newMessage())}catch(e){return false}})()"
+        ) { [weak self] result, _ in
+            guard let self, (result as? Bool) != true,
+                  !ChatBubbleController.isOpen,
+                  let url = ThreadURL.newMessageURL(from: self.webView.url)
+            else { return }
+            self.webView.load(URLRequest(url: url))
+        }
+    }
+
     // MARK: App-state overlays
 
     private func setContentState(_ state: ContentState) {
