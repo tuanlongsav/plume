@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Publish Plume X.Y to GitHub Releases, where the in-app updater finds it.
 #
-#   bash Scripts/release.sh X.Y [--skip-notarize] [--no-publish] [--from-build] [--rotating-key]
+#   bash Scripts/release.sh X.Y [--skip-notarize] [--no-publish] [--from-build]
+#                               [--rotating-key] [--raise-floor]
 #
 #   1. preflight     clean tree on an up-to-date main, new version, gh logged
 #                    in, signing key present and matching UpdateKeys.swift,
@@ -19,6 +20,9 @@
 #   Developer ID requirement, and a manifest that matches the zip and verifies
 #   with the trusted key. So what was tested is byte for byte what ships.
 # --skip-notarize implies --no-publish: an unnotarized build must never ship.
+# --raise-floor allows a release whose minimum macOS is above the previous
+#   release's. Without it a publish refuses: Macs between the two floors
+#   would stop getting updates.
 # --rotating-key is for the one release that ships a NEW public key in
 # UpdateKeys.swift while still being signed with the OLD key (the one every
 # installed copy trusts); see docs/RELEASE.md before using it.
@@ -41,13 +45,15 @@ SKIP_NOTARIZE=0
 PUBLISH=1
 ROTATING=0
 FROM_BUILD=0
+RAISE_FLOOR=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-notarize) SKIP_NOTARIZE=1; PUBLISH=0; shift ;;
         --no-publish)    PUBLISH=0; shift ;;
         --rotating-key)  ROTATING=1; shift ;;
         --from-build)    FROM_BUILD=1; shift ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        --raise-floor)   RAISE_FLOOR=1; shift ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
         -*) echo "Unknown argument: $1" >&2; exit 1 ;;
         *)
             [[ -z "$VERSION" ]] || { echo "Unexpected argument: $1" >&2; exit 1; }
@@ -58,7 +64,7 @@ done
 step() { printf '\n=== %s ===\n' "$1"; }
 die()  { echo "FAIL: $1" >&2; exit 1; }
 
-[[ -n "$VERSION" ]] || die "usage: $0 X.Y [--skip-notarize] [--no-publish] [--from-build] [--rotating-key]"
+[[ -n "$VERSION" ]] || die "usage: $0 X.Y [--skip-notarize] [--no-publish] [--from-build] [--rotating-key] [--raise-floor]"
 [[ "$FROM_BUILD" -eq 0 || "$PUBLISH" -eq 1 ]] \
     || die "--from-build publishes; it cannot be combined with --no-publish or --skip-notarize."
 # Same rule as build_app.sh, checked here so preflight fails before a build.
@@ -130,6 +136,12 @@ awk -v head="## $VERSION" '
     on { print }
 ' CHANGELOG.md > "$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || die "CHANGELOG.md has no '## $VERSION' section with text under it."
+# The heading ships with the release (and a candidate is what ships), so a
+# placeholder such as "chưa phát hành" must have become a date by now.
+if [[ "$SKIP_NOTARIZE" -eq 0 ]]; then
+    grep -qE "^## ${VERSION//./\\.} — [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md \
+        || die "CHANGELOG.md: date the heading, '## $VERSION — YYYY-MM-DD' (the day the candidate is built)."
+fi
 
 if [[ "$PUBLISH" -eq 1 ]]; then
     [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean."
@@ -216,6 +228,34 @@ JSON
         && git fetch -q origin main \
         && [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]]; then
         git rev-parse HEAD > "$CANDIDATE"
+    fi
+fi
+
+step "Minimum macOS"
+# Compared with what the last release's manifest says, which is what
+# installed copies were told; padded to three numbers for a numeric sort.
+padded() { awk -F. '{ printf "%d.%d.%d\n", $1, $2, $3 }' <<<"$1"; }
+PREV_MIN=""
+if [[ -n "$LATEST" ]]; then
+    PREV_MIN="$(curl -fsSL "https://github.com/$REPO/releases/download/v$LATEST/Plume-$LATEST.manifest.json" 2>/dev/null \
+        | plutil -extract minimumSystemVersion raw -o - - 2>/dev/null || true)"
+fi
+if [[ -z "$PREV_MIN" ]]; then
+    if [[ -n "$LATEST" && "$PUBLISH" -eq 1 && "$TAG_ORIGIN" -eq 1 ]]; then
+        die "cannot read the minimum macOS from v$LATEST's manifest."
+    fi
+    echo "$VERSION needs macOS $MIN_OS (no previous release to compare with)."
+else
+    echo "v$LATEST needs macOS $PREV_MIN; $VERSION needs macOS $MIN_OS."
+    TOP="$(printf '%s\n%s\n' "$(padded "$PREV_MIN")" "$(padded "$MIN_OS")" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+    if [[ "$TOP" == "$(padded "$MIN_OS")" && "$TOP" != "$(padded "$PREV_MIN")" ]]; then
+        if [[ "$RAISE_FLOOR" -eq 1 ]]; then
+            echo "WARNING: raising the minimum macOS; Macs below $MIN_OS stay on v$LATEST." >&2
+        elif [[ "$PUBLISH" -eq 1 ]]; then
+            die "$VERSION raises the minimum macOS from $PREV_MIN to $MIN_OS; Macs in between would stop updating. Use --raise-floor if that is intended."
+        else
+            echo "WARNING: this raises the minimum macOS; publishing will need --raise-floor." >&2
+        fi
     fi
 fi
 

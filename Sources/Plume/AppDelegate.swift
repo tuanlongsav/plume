@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation, NSWindowDelegate {
@@ -62,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         controller.load()
-        NSApp.activate()
+        NSApp.plumeActivate()
         Updater.shared.scheduleLaunchCheck()
     }
 
@@ -115,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 completionHandler()
                 return
             }
-            NSApp.activate()
+            NSApp.plumeActivate()
             window.makeKeyAndOrderFront(nil)
             controller.activateNotification(id: id)
         }
@@ -128,6 +129,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func goBack() { controller.goBack() }
     @objc private func goForward() { controller.goForward() }
     @objc private func goToChats() { controller.goToChats() }
+
+    /// The standard panel, plus the engine the page runs on: WKWebView uses
+    /// the WebKit the OS shipped, not the installed Safari's, so a report from
+    /// an older Mac is only useful with this line in it.
+    @objc private func showAbout() {
+        let webKit = Bundle(for: WKWebView.self).object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let line = "WebKit \(webKit) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        let credits = NSAttributedString(string: line, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        NSApp.plumeActivate()
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
 
     @objc private func toggleDark() { controller.toggleDark() }
     @objc private func followSystem() { controller.followSystemAppearance() }
@@ -256,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // the one failure this whole arrangement must never produce.
         controller.reclaimWebView()
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSApp.plumeActivate()
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -330,7 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: L.t("Giới thiệu Plume", "About Plume"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L.t("Giới thiệu Plume", "About Plume"), action: #selector(showAbout), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: L.t("Kiểm tra cập nhật…", "Check for Updates…"), action: #selector(Updater.checkNow(_:)), keyEquivalent: "").target = Updater.shared
         appMenu.addItem(withTitle: L.t("Tự động kiểm tra cập nhật", "Check for Updates Automatically"), action: #selector(toggleAutoUpdate), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
@@ -452,5 +468,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
+    }
+}
+
+extension NSApplication {
+    /// `activate()` is macOS 14+ and cooperative: it yields when another app
+    /// is frontmost and the user did not ask for Plume. macOS 13 has only
+    /// `activate(ignoringOtherApps:)`, where `true` always takes focus, so
+    /// work the user did not start (the daily update check) passes false.
+    func plumeActivate(userInitiated: Bool = true) {
+        if #available(macOS 14.0, *) {
+            activate()
+        } else {
+            activate(ignoringOtherApps: userInitiated)
+        }
     }
 }

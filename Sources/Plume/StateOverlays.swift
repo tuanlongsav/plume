@@ -409,6 +409,10 @@ final class OfflineView: OverlayView {
         stack.setCustomSpacing(22, after: subtitle)
         stack.setCustomSpacing(22, after: button)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        // The button's glow reaches past its bounds; macOS 13 clips views by
+        // default (14 does not), so both levels opt out explicitly.
+        stack.clipsToBounds = false
+        button.clipsToBounds = false
         addSubview(stack)
 
         NSLayoutConstraint.activate([

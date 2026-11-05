@@ -63,6 +63,16 @@ enum UpdateDecision: Equatable {
     case available(UpdateCandidate)
 }
 
+enum ManifestVerdict: Equatable {
+    case offer(UpdateManifest)
+    /// The release needs a newer macOS than this Mac runs.
+    case unsupported(minimum: String)
+    /// It arrived but does not describe the release it is attached to.
+    case invalid
+    /// No usable answer; worth another try later.
+    case unreachable
+}
+
 enum UpdateFeed {
     static let defaultRepo = "tuanlongsav/plume"
 
@@ -76,6 +86,33 @@ enum UpdateFeed {
     static func releasesPageURL(repo: String) -> URL? {
         guard isValidRepo(repo) else { return nil }
         return URL(string: "https://github.com/\(repo)/releases/latest")
+    }
+
+    /// Every release, for a Mac whose macOS the latest one no longer supports:
+    /// an older release there may still run.
+    static func allReleasesPageURL(repo: String) -> URL? {
+        guard isValidRepo(repo) else { return nil }
+        return URL(string: "https://github.com/\(repo)/releases")
+    }
+
+    /// The candidate's manifest, read before the user is asked, so a release
+    /// this Mac cannot run is never offered (it used to be, and was refused
+    /// only after Update, then offered again the next day).
+    static func judgeManifest(data: Data?, status: Int, failed: Bool,
+                              candidate: UpdateCandidate,
+                              running: OperatingSystemVersion) -> ManifestVerdict {
+        guard !failed, status == 200, let data else { return .unreachable }
+        guard data.count <= 64 * 1024,
+              let manifest = try? JSONDecoder().decode(UpdateManifest.self, from: data),
+              (try? UpdateVerifier.checkManifest(
+                  manifest, expectedVersion: candidate.version,
+                  assetName: assetNames(for: candidate.version).zip,
+                  assetSize: candidate.zipSize)) != nil
+        else { return .invalid }
+        guard SystemVersion.satisfies(minimum: manifest.minimumSystemVersion, running: running) else {
+            return .unsupported(minimum: manifest.minimumSystemVersion)
+        }
+        return .offer(manifest)
     }
 
     private static func isValidRepo(_ repo: String) -> Bool {

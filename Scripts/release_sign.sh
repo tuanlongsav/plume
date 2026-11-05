@@ -120,6 +120,27 @@ codesign --verify --strict "$APP" || die "app fails signature verification."
 codesign --verify --strict -R="$REQUIREMENT" "$APP" \
     || die "app does not meet the updater's Developer ID requirement (team U4B264GM2B)."
 
+# The floor the app declares must be the one every slice was built for, and
+# the SDK version it records (which AppKit and WebKit read for linked-on-or-
+# after behaviour) must be the pinned one from build_app.sh, also carried in
+# the signature as its Runtime Version.
+MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+padded() { awk -F. '{ printf "%d.%d.%d\n", $1, $2, $3 }' <<<"$1"; }
+EXPECTED_SDK="$(printf '%s\n%s\n' "$(padded "$MIN_OS")" "14.0.0" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+BUILD_INFO="$(vtool -show-build "$APP/Contents/MacOS/Plume")"
+for want in minos sdk; do
+    GOT="$(awk -v k="$want" '$1 == k { print $2 }' <<<"$BUILD_INFO" | sort -u)"
+    case "$want" in
+        minos) [[ "$(padded "$GOT")" == "$(padded "$MIN_OS")" ]] \
+                   || die "binary minos is '$GOT', Info.plist says $MIN_OS." ;;
+        sdk)   [[ "$(padded "$GOT")" == "$EXPECTED_SDK" ]] \
+                   || die "binary records sdk '$GOT', expected $EXPECTED_SDK (build_app.sh SDK_STAMP)." ;;
+    esac
+done
+grep -qF "Runtime Version=$EXPECTED_SDK" <<<"$(codesign -dvvv "$APP" 2>&1 || true)" \
+    || die "the signature's Runtime Version is not $EXPECTED_SDK."
+echo "Minimum macOS $MIN_OS, linked behaviour of SDK $EXPECTED_SDK"
+
 if [[ "$SKIP_NOTARIZE" -eq 1 ]]; then
     echo "--skip-notarize: notarization skipped. The result is NOT shippable."
 else
@@ -147,7 +168,16 @@ codesign --verify --strict "$STAGE/Plume.app" \
     || die "staged app fails verification — stale files in the bundle?"
 ln -sfn /Applications "$STAGE/Applications"
 
-cat > "$STAGE/Đọc trước khi cài.txt" <<'NOTE'
+case "${MIN_OS%%.*}" in
+    13) MIN_NAME="Ventura" ;;
+    14) MIN_NAME="Sonoma" ;;
+    15) MIN_NAME="Sequoia" ;;
+    26) MIN_NAME="Tahoe" ;;
+    *)  MIN_NAME="" ;;
+esac
+# Unquoted heredoc, so the floor comes from the app; the text has no other
+# $ or backtick.
+cat > "$STAGE/Đọc trước khi cài.txt" <<NOTE
 Plume — Messenger cho macOS
 ===========================
 
@@ -165,10 +195,12 @@ Lần đầu vào cuộc gọi thoại hoặc video, macOS sẽ hỏi quyền mi
 đó là hộp thoại của hệ điều hành, không phải của Plume.
 
 YÊU CẦU
-- macOS 14 (Sonoma) trở lên.
+- macOS $MIN_OS${MIN_NAME:+ ($MIN_NAME)} trở lên. Nếu Plume không mở được, hãy
+  cập nhật macOS (Cài đặt hệ thống ▸ Cập nhật phần mềm) rồi thử lại.
 - Chạy trên cả máy Apple Silicon và Intel.
 
-Plume là lớp vỏ gói messenger.com bằng WebKit của hệ thống. Tài khoản và tin
+Plume là lớp vỏ gói Messenger (messenger.com, hoặc facebook.com/messages với
+tài khoản Meta đã chuyển sang Facebook) bằng WebKit của hệ thống. Tài khoản và tin
 nhắn đi thẳng tới Meta như khi dùng trình duyệt; không có máy chủ trung gian
 nào của Plume, và không có dữ liệu nào được gửi đi đâu khác.
 NOTE

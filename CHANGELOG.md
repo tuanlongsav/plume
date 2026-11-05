@@ -6,6 +6,10 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
 
 ## 1.2 — chưa phát hành
 
+- Chạy được trên macOS 13.3 (Ventura) trở lên, gồm các máy Mac 2017. Máy
+  macOS 13.0–13.2 cần cập nhật macOS trước.
+- Plume không mời cập nhật lên một bản mà máy của bạn không chạy được.
+- Plume ▸ Giới thiệu Plume ghi phiên bản WebKit và macOS, giúp báo lỗi dễ hơn.
 - ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).
 - Trên messenger.com, số chưa đọc trên Dock không còn nhấp nháy về 0 khi có
   tin nhắn mới.

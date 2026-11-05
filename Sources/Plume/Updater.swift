@@ -6,9 +6,10 @@ import UserNotifications
 ///
 /// Trust is the same as Sparkle's: the zip must carry an Ed25519 signature by
 /// the key in `UpdateKeys`, and the unpacked app must be signed by Plume's
-/// Developer ID team. The only request ever made is an unauthenticated
-/// `releases/latest` (plus the asset downloads when the user says Update),
-/// with no cookies and nothing but a User-Agent — at most once a day.
+/// Developer ID team. The requests are an unauthenticated `releases/latest`
+/// and, only when that names a newer version, its small manifest (so a
+/// release this Mac cannot run is never offered), plus the download when the
+/// user says Update: no cookies and nothing but a User-Agent, once a day.
 ///
 /// No timers: one delayed check after launch, then `checkIfDue` on app
 /// activation, which is a date comparison until a day has passed (rule 7).
@@ -147,10 +148,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         busy = false
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
-        // Only an answer from GitHub starts the daily interval; anything else
-        // retries later the same day instead of waiting until tomorrow.
+        // Only a verdict starts the daily interval (`markChecked`); anything
+        // else retries later the same day instead of waiting until tomorrow.
         if error == nil, status == 200 || status == 404 {
-            Preferences.lastUpdateCheck = Date()
             retryNotBefore = nil
         } else {
             retryNotBefore = Date().addingTimeInterval(UpdateSchedule.retryDelay(
@@ -159,6 +159,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         }
         // 404: the repository has no published release yet.
         if status == 404 {
+            markChecked()
             if manual { showUpToDate(current) }
             return
         }
@@ -170,6 +171,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         guard error == nil, status == 200, let data,
               let release = try? JSONDecoder().decode(UpdateRelease.self, from: data)
         else {
+            if status == 200 { markChecked() }   // GitHub answered, with something odd
             if manual { showFailure(.checkFailed) }
             return
         }
@@ -177,14 +179,22 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         switch UpdateFeed.decide(release: release, current: current,
                                  skipped: skipped, honourSkip: !manual) {
         case .upToDate:
+            markChecked()
             if manual { showUpToDate(current) }
         case .skipped:
-            break
+            markChecked()
         case .assetsMissing(let version, let page):
+            markChecked()
             if manual { showFailure(.assetsMissing(version), page: page) }
         case .available(let candidate):
-            offer(candidate, current: current, manual: manual)
+            fetchManifest(for: candidate, current: current, manual: manual)
         }
+    }
+
+    /// A check reached a verdict: the next automatic one is due in a day.
+    private func markChecked() {
+        Preferences.lastUpdateCheck = Date()
+        retryNotBefore = nil
     }
 
     /// URLSession calls back inside a main-queue block. A modal alert run
@@ -194,16 +204,18 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         RunLoop.main.perform(work)
     }
 
-    private func offer(_ candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
+    private func offer(_ candidate: UpdateCandidate, manifest: UpdateManifest,
+                       current: AppVersion, manual: Bool) {
         let installed = L.t("Bạn đang dùng Plume \(current).", "You have Plume \(current).")
         var buttons = [L.t("Cập nhật", "Update"), L.t("Để sau", "Later")]
         if !manual { buttons.append(L.t("Bỏ qua phiên bản này", "Skip This Version")) }
         switch present(L.t("Có bản \(candidate.title)", "\(candidate.title) is available"),
                        candidate.notes.isEmpty ? installed : candidate.notes + "\n\n" + installed,
-                       buttons: buttons) {
+                       buttons: buttons, userInitiated: manual) {
         case .alertFirstButtonReturn:
             Preferences.skippedVersion = nil
-            fetchManifest(for: candidate)
+            busy = true
+            startDownload(candidate, manifest: manifest)
         case .alertThirdButtonReturn:
             Preferences.skippedVersion = candidate.version.description
         default:
@@ -213,46 +225,42 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
     // MARK: Download
 
-    private func fetchManifest(for candidate: UpdateCandidate) {
+    private func fetchManifest(for candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
         busy = true
         session.dataTask(with: candidate.manifestURL) { [weak self] data, response, error in
             Self.onRunLoop { self?.handleManifest(data: data, response: response, error: error,
-                                                  candidate: candidate) }
+                                                  candidate: candidate, current: current,
+                                                  manual: manual) }
         }.resume()
     }
 
     private func handleManifest(data: Data?, response: URLResponse?, error: Error?,
-                                candidate: UpdateCandidate) {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard error == nil, status == 200, let data else {
-            finishWithFailure(.downloadFailed, page: candidate.pageURL)
-            return
+                                candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
+        busy = false
+        let verdict = UpdateFeed.judgeManifest(
+            data: data, status: (response as? HTTPURLResponse)?.statusCode ?? 0,
+            failed: error != nil, candidate: candidate,
+            running: ProcessInfo.processInfo.operatingSystemVersion)
+        switch verdict {
+        case .unreachable:
+            if manual {
+                showFailure(.checkFailed)
+            } else {
+                retryNotBefore = Date().addingTimeInterval(
+                    UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: nil))
+            }
+        case .invalid:
+            markChecked()
+            PlumeTrace.log("update: manifest rejected for \(candidate.version)")
+            if manual { showFailure(.invalidPackage, page: candidate.pageURL) }
+        case .unsupported(let minimum):
+            // Nothing to offer this Mac; an automatic check stays quiet.
+            markChecked()
+            if manual { showNewestForThisMac(current, newer: candidate.version, needs: minimum) }
+        case .offer(let manifest):
+            markChecked()
+            offer(candidate, manifest: manifest, current: current, manual: manual)
         }
-        // It arrived, so a bad manifest is a bad release, not a bad connection.
-        guard data.count <= 64 * 1024,
-              let manifest = try? JSONDecoder().decode(UpdateManifest.self, from: data)
-        else {
-            finishWithFailure(.invalidPackage, page: candidate.pageURL)
-            return
-        }
-        do {
-            try UpdateVerifier.checkManifest(
-                manifest, expectedVersion: candidate.version,
-                assetName: UpdateFeed.assetNames(for: candidate.version).zip,
-                assetSize: candidate.zipSize)
-        } catch {
-            PlumeTrace.log("update: manifest rejected: \(error)")
-            finishWithFailure(.invalidPackage, page: candidate.pageURL)
-            return
-        }
-        guard SystemVersion.satisfies(minimum: manifest.minimumSystemVersion,
-                                      running: ProcessInfo.processInfo.operatingSystemVersion)
-        else {
-            finishWithFailure(.needsNewerSystem(manifest.minimumSystemVersion),
-                              page: candidate.pageURL)
-            return
-        }
-        startDownload(candidate, manifest: manifest)
     }
 
     private func startDownload(_ candidate: UpdateCandidate, manifest: UpdateManifest) {
@@ -505,10 +513,28 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     }
 
     private func showFailure(_ failure: UpdateFailure, page: URL? = nil) {
-        let page = page ?? UpdateFeed.releasesPageURL(repo: Preferences.updateRepo)
-        let buttons = page == nil ? [] : ["OK", L.t("Mở trang tải về", "Open Download Page")]
+        // A Mac too old for this release may still run an earlier one.
+        let target: URL?
+        if case .needsNewerSystem = failure {
+            target = UpdateFeed.allReleasesPageURL(repo: Preferences.updateRepo)
+        } else {
+            target = page ?? UpdateFeed.releasesPageURL(repo: Preferences.updateRepo)
+        }
+        let buttons = target == nil ? [] : ["OK", L.t("Mở trang tải về", "Open Download Page")]
         if present(failure.title, failure.detail, buttons: buttons, style: .warning)
-            == .alertSecondButtonReturn, let page {
+            == .alertSecondButtonReturn, let target {
+            NSWorkspace.shared.open(target)
+        }
+    }
+
+    private func showNewestForThisMac(_ current: AppVersion, newer: AppVersion, needs minimum: String) {
+        let page = UpdateFeed.allReleasesPageURL(repo: Preferences.updateRepo)
+        let buttons = page == nil ? [] : ["OK", L.t("Mở trang Releases", "Open Releases Page")]
+        if present(L.t("Plume \(current) là bản mới nhất cho máy này",
+                       "Plume \(current) is the newest version for this Mac"),
+                   L.t("Plume \(newer) cần macOS \(minimum) trở lên.",
+                       "Plume \(newer) needs macOS \(minimum) or later."),
+                   buttons: buttons) == .alertSecondButtonReturn, let page {
             NSWorkspace.shared.open(page)
         }
     }
@@ -542,14 +568,17 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// never appear. Raised above the `.screenSaver`-level bubbles then.
     /// No buttons given means a single OK.
     @discardableResult
+    /// `userInitiated: false` (the daily check's offer) does not take focus
+    /// from another app on macOS 13, where activation is not cooperative.
     private func present(_ title: String, _ detail: String, buttons: [String] = [],
-                         style: NSAlert.Style = .informational) -> NSApplication.ModalResponse {
+                         style: NSAlert.Style = .informational,
+                         userInitiated: Bool = true) -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.alertStyle = style
         alert.messageText = title
         alert.informativeText = detail
         buttons.forEach { alert.addButton(withTitle: $0) }
-        NSApp.activate()
+        NSApp.plumeActivate(userInitiated: userInitiated)
         if ChatBubbleController.isOpen { alert.window.level = .screenSaver }
         return alert.runModal()
     }

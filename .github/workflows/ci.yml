@@ -64,6 +64,25 @@ jobs:
       - name: Release build
         # A stamped version exercises the version rule; the build number must
         # be MAJOR*10000 + MINOR*100, the same rule AppVersionTests pins.
+        # The plist's minimum macOS must be the binary's minos (build_app.sh
+        # derives it), the recorded SDK the pinned 14.0, and nothing may load
+        # from @rpath: no Swift library is embedded. Host architecture only:
+        # Xcode 16's SwiftPM fails multi-arch builds of a target with a
+        # swiftLanguageMode ("given: [5], supported: []"); releases build
+        # universal with the release Xcode, and release_sign.sh requires it.
         run: |
           PLUME_VERSION=1.2 bash Scripts/build_app.sh release
-          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' build/Plume.app/Contents/Info.plist)" = 10200 ]
+          P=build/Plume.app/Contents
+          [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' $P/Info.plist)" = 10200 ]
+          MIN="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' $P/Info.plist)"
+          INFO="$(vtool -show-build $P/MacOS/Plume)"
+          echo "$INFO"
+          [ "$(awk '$1 == "minos" { print $2 }' <<<"$INFO" | sort -u)" = "$MIN" ]
+          [ "$(awk '$1 == "sdk" { print $2 }' <<<"$INFO" | sort -u)" = 14.0 ]
+          LIBS="$(otool -L $P/MacOS/Plume)"
+          if grep -q '@rpath/' <<<"$LIBS"; then echo "loads from @rpath:"; echo "$LIBS"; exit 1; fi
+
+      - name: Intel slice compiles
+        # The Macs a lower floor reaches are Intel. One architecture through
+        # --triple avoids the multi-arch path above.
+        run: swift build -c release --triple x86_64-apple-macosx13.3

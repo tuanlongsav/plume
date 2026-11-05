@@ -52,11 +52,35 @@ echo "▸ assembling $APP …"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
+BIN="$APP/Contents/MacOS/$APP_NAME"
 if [[ "$CONFIG" == "release" ]]; then
     # Local symbols only matter to a debugger; dropping them shrinks the
     # binary. Done before codesign, which re-signs the result below.
-    strip -x "$APP/Contents/MacOS/$APP_NAME"
+    strip -x "$BIN"
 fi
+
+# The minimum macOS is Package.swift's, read back out of the binary so the
+# Info.plist (and from it the updater manifest) can never disagree with it.
+# awk reads all its input, so nothing dies of SIGPIPE under pipefail; two
+# architectures with different floors give two lines and fail the check.
+BUILD_INFO="$(vtool -show-build "$BIN")"
+MIN_OS="$(awk '$1 == "minos" { print $2 }' <<<"$BUILD_INFO" | sort -u)"
+[[ "$MIN_OS" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] \
+    || { echo "expected one minos across architectures, got: $MIN_OS" >&2; exit 1; }
+
+# AppKit and WebKit switch behaviours on the SDK version a binary records
+# ("linked on or after"), e.g. whether views clip to their bounds. SwiftPM
+# records the deployment target there, so lowering the floor would quietly
+# change behaviour on every macOS. Record 14.0, what 1.0 shipped, unless the
+# floor is above it; moving this is a deliberate change of its own.
+SDK_STAMP=14.0
+if [[ "$(printf '%s\n%s\n' "$MIN_OS" "$SDK_STAMP" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" != "$SDK_STAMP" ]]; then
+    SDK_STAMP="$MIN_OS"
+fi
+echo "▸ build version: minos $MIN_OS, sdk $(awk '$1 == "sdk" { print $2 }' <<<"$BUILD_INFO" | sort -u | tr '\n' ' ')→ $SDK_STAMP"
+vtool -set-build-version macos "$MIN_OS" "$SDK_STAMP" -output "$BIN.stamped" "$BIN"
+mv -f "$BIN.stamped" "$BIN"
+chmod 755 "$BIN"
 
 # The .icns is generated, not committed: it is 1.2 MB of pixels that
 # Scripts/icon_gen.swift reproduces exactly. Rendered once, then reused
@@ -81,7 +105,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>$VERSION</string>
     <key>CFBundleVersion</key>         <string>$BUILD</string>
-    <key>LSMinimumSystemVersion</key>  <string>14.0</string>
+    <key>LSMinimumSystemVersion</key>  <string>$MIN_OS</string>
     <key>NSHighResolutionCapable</key> <true/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSCameraUsageDescription</key>     <string>Plume needs the camera for video calls.</string>

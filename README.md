@@ -8,6 +8,19 @@ Caprine bundles a full Chromium (~150 MB) per app. Plume wraps
 is a few MB, starts fast, scrolls with native momentum, and shares the OS's
 WebKit security updates. Pure Swift + AppKit — no runtime dependencies.
 
+## Install
+
+Download **Plume-X.Y.dmg** from the
+[latest release](https://github.com/tuanlongsav/plume/releases/latest), open
+it and drag Plume into Applications. It is signed and notarized, so it opens
+without warnings, and later versions install themselves (Plume asks first).
+
+Requires **macOS 13.3 (Ventura) or later**, on Apple silicon or Intel. On
+macOS 13.0–13.2, update macOS first (System Settings ▸ Software Update). Plume
+uses the WebKit that ships with macOS, not the installed Safari: 13.3 is the
+first whose engine Facebook serves Messenger to. A Mac that already runs an
+older Plume that cannot update itself installs the new DMG by hand once.
+
 ## Features
 
 - Native `WKWebView` shell, persistent login (cookies survive relaunch)
@@ -60,7 +73,7 @@ CI runs `swift test` and a release build on a macOS runner for every pull
 request and every push to `main` ([`ci.yml`](.github/workflows/ci.yml)).
 
 Requires Xcode 16 or later (Swift 6 toolchain, macOS 15 SDK); the app itself
-runs on macOS 14 and later. `build_app.sh` compiles with
+runs on macOS 13.3 and later. `build_app.sh` compiles with
 SwiftPM, assembles the `.app` bundle with an `Info.plist` and app icon, and
 ad-hoc signs it (needed for notifications and camera/mic TCC prompts).
 `install.sh` runs that build, quits a running Plume, replaces the copy in

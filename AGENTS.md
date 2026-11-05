@@ -20,7 +20,11 @@ CryptoKit and Security, which ship with macOS).
 
 - SwiftPM, `swift-tools-version:6.0`, but **Swift 5 language mode**
   (`.swiftLanguageMode(.v5)`): strict concurrency checking is off.
-- Minimum macOS 14. Bundle id `com.htl.plume`.
+- Minimum macOS 13.3, set only in `Package.swift`: its system WebKit (Safari
+  16.4) is the oldest Facebook serves Messenger to. The injected scripts must
+  stay within Safari 16.4 (`WebFloorTests`). Builds record SDK 14.0 for
+  linked-on-or-after behaviour (`build_app.sh` `SDK_STAMP`). Bundle id
+  `com.htl.plume`.
 - AppKit/WebKit only build on macOS. On any other machine you can read and
   edit, but you cannot compile or test — say so instead of claiming it builds.
 
@@ -109,7 +113,8 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
    Bubbles and card sit at `.screenSaver` level with `canJoinAllSpaces` +
    `fullScreenAuxiliary` (`PlumeOverlay`); menus must be lifted above them
    (`ChipMenuLift`). Timers, observers and display links capture `[weak self]`
-   (the display link goes through `LinkProxy`). Anything that runs for the
+   (the frame loop runs on a `BubbleFrameDriver`: a display link on macOS
+   14+, a 60 Hz timer on 13; both call back weakly). Anything that runs for the
    whole of bubble mode needs a timer tolerance and must do no work when idle.
 8. **Privacy.** `PlumeTrace.log` is DEBUG-only; never write contact names,
    message text or cursor positions to disk in release builds. Conversation
@@ -119,7 +124,10 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
     rotation steps in `docs/RELEASE.md`: installed copies trust only the key
     they embed. Never rebuild or re-upload a version that is already published
     (new bytes, new signature). The update check sends nothing but a
-    User-Agent, at most once a day, and runs no timer. `0.0.0`, ad-hoc and
+    User-Agent, at most once a day (`releases/latest`, plus the candidate's
+    manifest when there is a newer version, so a release this Mac cannot run
+    is never offered), and runs no timer. Never raise the minimum macOS
+    without `release.sh --raise-floor` and a note for the Macs left behind. `0.0.0`, ad-hoc and
     translocated copies never update themselves.
 11. **Put logic where it can be tested.** Prefer small pure types
     (`ThreadURL`, `BubbleChainSync`, `DisplayHop`, `Chain.dockedRowXs`) with

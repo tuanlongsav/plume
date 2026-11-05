@@ -172,4 +172,53 @@ final class UpdateFeedTests: XCTestCase {
         guard case .assetsMissing(let v, _) = decision else { return XCTFail("\(decision)") }
         XCTAssertEqual(v, AppVersion("1.2"))
     }
+
+    // MARK: Manifest before the offer
+
+    private let candidate12 = UpdateCandidate(
+        version: AppVersion("1.2")!, title: "Plume 1.2", notes: "",
+        pageURL: URL(string: "https://github.com/tuanlongsav/plume/releases/tag/v1.2")!,
+        zipURL: URL(string: "https://github.com/tuanlongsav/plume/releases/download/v1.2/Plume-1.2.zip")!,
+        zipSize: 1001,
+        manifestURL: URL(string: "https://github.com/tuanlongsav/plume/releases/download/v1.2/Plume-1.2.manifest.json")!)
+
+    private func manifestJSON(version: String = "1.2", length: Int = 1001, minimum: String = "13.3") -> Data {
+        Data("""
+        {"format": 1, "version": "\(version)", "build": 10200, "minimumSystemVersion": "\(minimum)",
+         "asset": "Plume-\(version).zip", "length": \(length), "sha256": "ab", "ed25519": "cd"}
+        """.utf8)
+    }
+
+    private let ventura = OperatingSystemVersion(majorVersion: 13, minorVersion: 6, patchVersion: 0)
+
+    private func judge(_ data: Data?, status: Int = 200, failed: Bool = false) -> ManifestVerdict {
+        UpdateFeed.judgeManifest(data: data, status: status, failed: failed,
+                                 candidate: candidate12, running: ventura)
+    }
+
+    func testManifestThatFitsIsOffered() throws {
+        let m = try JSONDecoder().decode(UpdateManifest.self, from: manifestJSON())
+        XCTAssertEqual(judge(manifestJSON()), .offer(m))
+    }
+
+    // A release this Mac cannot run is never offered.
+    func testManifestNeedingANewerMacIsNotOffered() {
+        XCTAssertEqual(judge(manifestJSON(minimum: "14.0")), .unsupported(minimum: "14.0"))
+        XCTAssertEqual(judge(manifestJSON(minimum: "13.7")), .unsupported(minimum: "13.7"))
+    }
+
+    func testManifestThatDoesNotDescribeTheReleaseIsInvalid() {
+        XCTAssertEqual(judge(manifestJSON(version: "1.3")), .invalid)
+        XCTAssertEqual(judge(manifestJSON(length: 5)), .invalid)
+        XCTAssertEqual(judge(Data("not json".utf8)), .invalid)
+        XCTAssertEqual(judge(Data(count: 70 * 1024)), .invalid)
+    }
+
+    // No answer is worth retrying; it says nothing about the release.
+    func testNoManifestIsUnreachable() {
+        XCTAssertEqual(judge(nil), .unreachable)
+        XCTAssertEqual(judge(manifestJSON(), status: 404), .unreachable)
+        XCTAssertEqual(judge(manifestJSON(), status: 503), .unreachable)
+        XCTAssertEqual(judge(manifestJSON(), failed: true), .unreachable)
+    }
 }

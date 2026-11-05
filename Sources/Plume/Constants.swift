@@ -50,6 +50,20 @@ enum Plume {
         return linkShimHosts.contains(host) && url.path == "/l.php"
     }
 
+    /// A URL from a string that may hold characters a URL cannot, the same
+    /// way on every macOS. macOS 13's `URL(string:)` returns nil for
+    /// "https://vi.wikipedia.org/wiki/Việt_Nam"; macOS 14's encodes it but
+    /// also turns an existing "%20" into "%2520", a different address. So
+    /// encode first, leaving `%` escapes and URL punctuation alone.
+    static func lenientURL(_ string: String) -> URL? {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.formUnion(.urlPathAllowed)
+        allowed.formUnion(.urlFragmentAllowed)
+        allowed.insert(charactersIn: "#%")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed).flatMap(URL.init(string:))
+            ?? URL(string: string)
+    }
+
     /// The shim's real destination, so the browser opens the site itself
     /// rather than a tracking redirect. Anything that is not a well-formed
     /// http(s) target is returned unchanged; the browser can still follow it.
@@ -57,7 +71,7 @@ enum Plume {
         guard isLinkShim(url),
               let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first(where: { $0.name == "u" })?.value,
-              let target = URL(string: raw), target.host != nil,
+              let target = lenientURL(raw), target.host != nil,
               let scheme = target.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return url }
