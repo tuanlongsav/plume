@@ -863,6 +863,11 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         if let i = headIndex(for: live), let convo = conversation(of: bubbles[i]) {
             lastOpenedIndex = i
             open(convo, toggle: false)
+        } else if let thread = ThreadURL.canonical(from: webView.url) {
+            // On a conversation with no head (opened inside the card, or
+            // pushed out of the chain): reopen it, as a notification does.
+            lastOpenedIndex = 0
+            open(BubbleConversation(thread: thread), toggle: false)
         } else {
             lastOpenedIndex = 0
             open(nil, toggle: false)

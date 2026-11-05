@@ -108,9 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             bubbles.toggleCardFromShortcut()
             return
         }
-        switch Summon.action(appActive: NSApp.isActive, appHidden: NSApp.isHidden,
-                             mainWindowVisible: window.isVisible,
-                             mainWindowKey: window.isKeyWindow) {
+        switch summonAction {
         case .hide:
             NSApp.hide(nil)
         case .show:
@@ -119,6 +117,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window.makeKeyAndOrderFront(nil)
             NSApp.plumeActivate(fromShortcut: true)
         }
+    }
+
+    /// A key window on another Space (or in its own full-screen Space) is not
+    /// in front of the user: the shortcut must bring it here, not hide Plume.
+    private var summonAction: Summon.Action {
+        Summon.action(appActive: NSApp.isActive, appHidden: NSApp.isHidden,
+                      mainWindowVisible: window.isVisible && window.isOnActiveSpace,
+                      mainWindowKey: window.isKeyWindow)
     }
 
     @objc private func toggleMenuBarIcon() {
@@ -349,6 +355,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = detail
+        // A sheet on a window that is not on screen never appears and comes
+        // up later, out of context. With the menu bar icon on, the main window
+        // can be closed and Plume in the background when the menu bar icon's
+        // menu asks for bubbles; then stand the alert on its own.
+        guard window.isVisible, NSApp.isActive else {
+            NSApp.plumeActivate(fromShortcut: true)
+            if ChatBubbleController.isOpen { alert.window.level = .screenSaver }
+            alert.runModal()
+            return
+        }
         alert.beginSheetModal(for: window, completionHandler: nil)
     }
 
@@ -429,10 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if ChatBubbleController.isOpen {
                 item.title = L.t("Mở / gập bong bóng", "Open / Fold Chat Bubble")
             } else {
-                let hide = Summon.action(appActive: NSApp.isActive, appHidden: NSApp.isHidden,
-                                         mainWindowVisible: window.isVisible,
-                                         mainWindowKey: window.isKeyWindow) == .hide
-                item.title = hide ? L.t("Ẩn Plume", "Hide Plume") : L.t("Mở Plume", "Open Plume")
+                item.title = summonAction == .hide ? L.t("Ẩn Plume", "Hide Plume") : L.t("Mở Plume", "Open Plume")
             }
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
         case #selector(toggleAutoUpdate): item.state = Preferences.autoUpdateCheck ? .on : .off
