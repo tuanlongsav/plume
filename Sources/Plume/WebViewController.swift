@@ -135,6 +135,41 @@ final class WebViewController: NSViewController {
         webView.load(URLRequest(url: Plume.startURL))
     }
 
+    // MARK: Tracker blocking
+
+    private var trackerList: WKContentRuleList?
+
+    /// Compile `TrackerRules` and attach it, then `done`. WebKit compiles off
+    /// the main thread and keeps the result under the identifier; the first
+    /// page load waits for it so the blocker covers that load too. `done` runs
+    /// once even if the store fails, so the page always loads.
+    func prepareTrackerBlocking(then done: @escaping () -> Void) {
+        guard let store = WKContentRuleListStore.default() else { done(); return }
+        store.compileContentRuleList(forIdentifier: TrackerRules.identifier,
+                                     encodedContentRuleList: TrackerRules.json()) { [weak self] list, _ in
+            DispatchQueue.main.async {
+                self?.trackerList = list
+                self?.applyTrackerBlocking()
+                done()
+            }
+        }
+    }
+
+    /// On the shared content controller, so call windows opened from the
+    /// page get it too. Takes effect from the next request.
+    private func applyTrackerBlocking() {
+        guard let list = trackerList else { return }
+        let content = webView.configuration.userContentController
+        content.remove(list)
+        if Preferences.blockTrackers { content.add(list) }
+    }
+
+    var isBlockingTrackers: Bool { Preferences.blockTrackers }
+    func toggleBlockTrackers() {
+        Preferences.blockTrackers.toggle()
+        applyTrackerBlocking()
+    }
+
     /// View ▸ Back to Chats. On facebook.com a link in a chat (a profile, a
     /// post) is same-site and leaves the window on a page with no chat list.
     func goToChats() {

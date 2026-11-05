@@ -43,6 +43,8 @@ older Plume that cannot update itself installs the new DMG by hand once.
   the window is closed) and an optional global shortcut, ⌃⌥⌘M, to bring Plume
   up or put it away from any app
 - Page zoom (⌘+ ⌘− ⌘0), remembered
+- Third-party ad and analytics hosts blocked with a WebKit content blocker
+  (View ▸ Block Third-Party Trackers)
 - Remembers window size & position; full-screen, back/forward, reload
 
 Plume deliberately injects almost no CSS into Messenger. Decorative layers we
