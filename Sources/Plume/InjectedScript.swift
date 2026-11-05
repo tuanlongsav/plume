@@ -367,7 +367,41 @@ enum InjectedScript {
     })(typeof window !== "undefined" ? window : this);
     """#
 
-    static let source = newMessageMatchJS + #"""
+    /// Which notification owns the banner of each tag. Native code keys a
+    /// tagged banner on the tag alone (`notificationIdentifier`), so a newer
+    /// notification for the same conversation replaces the older banner; the
+    /// older one's close() must then do nothing, as in the Notifications
+    /// spec, or it takes the newer banner down. No DOM in here, so the tests
+    /// run it in a bare JSContext.
+    static let notifyTagsJS = #"""
+    (function (g) {
+        var MAX = 500;   // the page may never call close()
+        g.__plumeNotifyTags = function () {
+            var owners = new Map();   // tag -> id of the notification showing it
+            return {
+                shown: function (tag, id) {
+                    var key = String(tag || "");
+                    if (!key) return;
+                    // Re-inserted, so Map order is least recently shown first.
+                    owners.delete(key);
+                    owners.set(key, id);
+                    while (owners.size > MAX) owners.delete(owners.keys().next().value);
+                },
+                // A tag no longer in the table closes as it always did.
+                closes: function (tag, id) {
+                    var key = String(tag || "");
+                    if (!key) return true;
+                    var owner = owners.get(key);
+                    if (owner !== undefined && owner !== id) return false;
+                    owners.delete(key);
+                    return true;
+                }
+            };
+        };
+    })(typeof window !== "undefined" ? window : this);
+    """#
+
+    static let source = newMessageMatchJS + notifyTagsJS + #"""
     (function () {
         "use strict";
         if (window.__plumeInstalled) return;
@@ -382,6 +416,7 @@ enum InjectedScript {
         // --- Native notification bridge --------------------------------
         const live = new Map();   // id -> Notification instance
         const MAX_LIVE = 500;     // cap so a long session can't grow this forever
+        const tags = window.__plumeNotifyTags();
         let seq = 0;
 
         const NativeNotification = function (title, options) {
@@ -405,6 +440,7 @@ enum InjectedScript {
                 if (oldest === undefined) break;
                 live.delete(oldest);
             }
+            tags.shown(this.tag, id);
             post("notify", {
                 id: id,
                 title: String(title || ""),
@@ -424,6 +460,8 @@ enum InjectedScript {
         };
         NativeNotification.prototype.close = function () {
             live.delete(this._id);
+            // A newer notification with this tag owns the banner now.
+            if (!tags.closes(this.tag, this._id)) return;
             post("notifyClose", { id: this._id, tag: String(this.tag || "") });
         };
         NativeNotification.prototype.addEventListener = function (type, cb) {

@@ -148,8 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         applyMenuBarIcon()
     }
 
+    /// Goes by whether the shortcut works, not by the preference: a launch
+    /// that could not register it leaves the preference on, and the next
+    /// click must try again rather than turn it off.
     @objc private func toggleGlobalHotKey() {
-        Preferences.globalHotKey.toggle()
+        Preferences.globalHotKey = hotKey == nil
         applyGlobalHotKey(reportFailure: true)
     }
 
@@ -394,7 +397,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // the one failure this whole arrangement must never produce.
         controller.reclaimWebView()
         window.makeKeyAndOrderFront(nil)
-        NSApp.plumeActivate()
+        // Always the user's request, often from a non-activating bubble panel
+        // or the menu bar icon's menu while another app is in front: insist,
+        // or the main window can come up behind that app.
+        NSApp.plumeActivate(fromShortcut: true)
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -460,7 +466,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(actualSizePage): return canZoomPage && !PageZoom.isActual(controller.pageZoom)
         case #selector(toggleMenuBarIcon): item.state = Preferences.menuBarIcon ? .on : .off
         case #selector(toggleHideUnreadCount): item.state = Preferences.hideUnreadCount ? .on : .off
-        case #selector(toggleGlobalHotKey): item.state = Preferences.globalHotKey ? .on : .off
+        // Ticked only while registered (`toggleGlobalHotKey`).
+        case #selector(toggleGlobalHotKey): item.state = hotKey != nil ? .on : .off
         case #selector(summon):
             // Only the menu bar icon's menu has this item. In bubble mode it
             // folds or unfolds the card; otherwise it opens or hides Plume.
@@ -660,10 +667,10 @@ extension NSApplication {
         }
     }
 
-    /// The menu bar icon or the global shortcut: the user asked for Plume
-    /// from inside another app. Cooperative `activate()` may decline while
-    /// that app stays frontmost, and then the window would come up behind it;
-    /// insist once if it did.
+    /// The menu bar icon, the global shortcut or a bubble panel: the user
+    /// asked for Plume from inside another app. Cooperative `activate()` may
+    /// decline while that app stays frontmost, and then the window would come
+    /// up behind it; insist once if it did.
     func plumeActivate(fromShortcut: Bool) {
         plumeActivate()
         guard fromShortcut else { return }

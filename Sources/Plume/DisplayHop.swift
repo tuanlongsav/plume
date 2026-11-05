@@ -21,4 +21,20 @@ enum DisplayHop {
             ? visible.maxX - half - margin
             : visible.minX + half + margin
     }
+
+    /// Whether the pointer moved since the previous mouse poll. Kept apart
+    /// from the hover position, which the mouse monitors rewrite on every
+    /// event: by the next poll that already holds where the pointer came to
+    /// rest, so a pointer parked on another display never read as moved and
+    /// the chain never followed it.
+    struct PollMotion {
+        private var last: CGPoint?
+
+        /// Records `p` as this poll's sample.
+        mutating func moved(to p: CGPoint) -> Bool {
+            defer { last = p }
+            guard let last else { return true }
+            return hypot(p.x - last.x, p.y - last.y) >= 0.5
+        }
+    }
 }
