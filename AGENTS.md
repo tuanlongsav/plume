@@ -69,7 +69,7 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 | `ChatBubbleController.swift` | Bubble mode controller: chain membership, frame loop (`CADisplayLink`), card, hover, gestures, multi-display follow |
 | `Chain.swift`, `BubbleChipView.swift`, `BubblePanels.swift`, `ConversationPicker.swift`, `BubbleConversation.swift`, `BubbleOverlay.swift` | Bubble-mode parts: chain geometry and springs, one chat head, the card/bubble/tether panels, the conversation list, the snapshot model and avatar cache, overlay level and `ChipMenuLift` |
 | `PlumeTrace.swift` | DEBUG-only multi-display trace log (no-op in release) |
-| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift` | Small pure-logic helpers, unit-tested. `ThreadURL` knows both Messenger sites (`messenger.com/t/…`, `facebook.com/messages/t/…`) and which pages are the chat pages |
+| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift`, `PageZoom.swift` | Small pure-logic helpers, unit-tested. `ThreadURL` knows both Messenger sites (`messenger.com/t/…`, `facebook.com/messages/t/…`) and which pages are the chat pages |
 | `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
 | `Preferences.swift` | `UserDefaults`-backed settings |
 | `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |

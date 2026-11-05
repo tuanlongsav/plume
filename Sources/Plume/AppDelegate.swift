@@ -297,6 +297,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func findConversation() { controller.findConversation() }
     @objc private func jumpToConversation(_ sender: NSMenuItem) { controller.jumpToConversation(sender.tag) }
     @objc private func deleteConversation() { controller.deleteCurrentConversation() }
+    @objc private func zoomInPage()   { controller.setPageZoom(PageZoom.zoomedIn(from: controller.pageZoom)) }
+    @objc private func zoomOutPage()  { controller.setPageZoom(PageZoom.zoomedOut(from: controller.pageZoom)) }
+    @objc private func actualSizePage() { controller.setPageZoom(PageZoom.actual) }
+
+    /// Zoom acts on the main window's page only. A PDF or call window that
+    /// is key must not see ⌘+ silently rescale the window behind it, and the
+    /// bubble card keeps zoom 1 (`WebViewController.lendWebView`).
+    private var canZoomPage: Bool {
+        !ChatBubbleController.isOpen && NSApp.keyWindow === window
+    }
+
     @objc private func toggleShortcuts()  { Preferences.shortcuts.toggle() }
     @objc private func toggleAutoUpdate() { Preferences.autoUpdateCheck.toggle() }
 
@@ -320,6 +331,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             item.title = ChatBubbleController.isOpen
                 ? L.t("Về cửa sổ chính", "Back to Main Window")
                 : L.t("Chuyển sang bong bóng", "Switch to Chat Bubble")
+        case #selector(zoomInPage):     return canZoomPage && PageZoom.canZoomIn(controller.pageZoom)
+        case #selector(zoomOutPage):    return canZoomPage && PageZoom.canZoomOut(controller.pageZoom)
+        case #selector(actualSizePage): return canZoomPage && !PageZoom.isActual(controller.pageZoom)
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
         case #selector(toggleAutoUpdate): item.state = Preferences.autoUpdateCheck ? .on : .off
         case #selector(jumpToConversation(_:)), #selector(nextConversation),
@@ -387,6 +401,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         viewMenu.addItem(.separator())
         let fullScreen = viewMenu.addItem(withTitle: L.t("Vào chế độ toàn màn hình", "Enter Full Screen"), action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
+
+        // Page zoom, Safari's keys. ⌘0 is free: the conversation shortcuts
+        // are ⌘1–⌘9.
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: L.t("Kích thước thật", "Actual Size"), action: #selector(actualSizePage), keyEquivalent: "0").target = self
+        viewMenu.addItem(withTitle: L.t("Phóng to trang", "Zoom In"), action: #selector(zoomInPage), keyEquivalent: "+").target = self
+        // ⌘+ is typed as ⌘= on most layouts; a hidden twin takes that key.
+        let zoomInAlias = viewMenu.addItem(withTitle: L.t("Phóng to trang", "Zoom In"), action: #selector(zoomInPage), keyEquivalent: "=")
+        zoomInAlias.target = self
+        zoomInAlias.isHidden = true
+        zoomInAlias.allowsKeyEquivalentWhenHidden = true
+        viewMenu.addItem(withTitle: L.t("Thu nhỏ trang", "Zoom Out"), action: #selector(zoomOutPage), keyEquivalent: "-").target = self
 
         // Appearance / theming toggles (mirror the toolbar).
         viewMenu.addItem(.separator())

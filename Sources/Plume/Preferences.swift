@@ -31,6 +31,13 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.toolbar") }
     }
 
+    /// Page zoom of the main window (View ▸ Zoom In/Out, ⌘+ ⌘− ⌘0).
+    /// Defaults to 1; whatever is stored is clamped to `PageZoom.levels`.
+    static var pageZoom: Double {
+        get { PageZoom.clamped(defaults.object(forKey: "plume.pageZoom") as? Double ?? PageZoom.actual) }
+        set { defaults.set(PageZoom.clamped(newValue), forKey: "plume.pageZoom") }
+    }
+
     /// Keep the window floating above other apps. Defaults to off.
     static var alwaysOnTop: Bool {
         get { defaults.bool(forKey: "plume.alwaysOnTop") }
