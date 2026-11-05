@@ -347,7 +347,27 @@ enum InjectedScript {
     return gone ? "ok" : "timeout";
     """#
 
-    static let source = #"""
+    /// Recognising Messenger's own "New message" control. No DOM in here, so
+    /// the tests run it in a bare JSContext. By its link target first (`/new`
+    /// on messenger.com, `/messages/new` on facebook.com), then by its exact,
+    /// accent-folded label; "Tin nhắn mới" is also the label of the "jump to
+    /// new messages" pill, which `newMessage()` excludes by looking only
+    /// outside the open conversation.
+    static let newMessageMatchJS = #"""
+    (function (g) {
+        \#(InjectedScript.normJS)
+        var LABELS = ["new message", "tin nhan moi"];
+        g.__plumeNewMessage = {
+            isComposePath: function (path) {
+                var p = String(path || "").replace(/\/+$/, "");
+                return p === "/new" || p === "/messages/new";
+            },
+            isComposeLabel: function (label) { return LABELS.indexOf(norm(label)) !== -1; }
+        };
+    })(typeof window !== "undefined" ? window : this);
+    """#
+
+    static let source = newMessageMatchJS + #"""
     (function () {
         "use strict";
         if (window.__plumeInstalled) return;
@@ -502,6 +522,33 @@ enum InjectedScript {
                     for (var s = 1; s <= r.length; s++) {
                         var idx = (start + s) % r.length;
                         if (plumeRowUnread(r[idx])) return click(r[idx]);
+                    }
+                    return false;
+                },
+                // Messenger's own compose control, in the chat list's
+                // navigation and never inside the open conversation or the
+                // top bar. Clicked, not loaded: a page load would empty the
+                // list. False when it is not there; native code decides.
+                newMessage: function () {
+                    var M = window.__plumeNewMessage;
+                    if (!M) return false;
+                    var first = rows()[0];
+                    var scope = (first && first.closest('[role="navigation"]')) || document;
+                    function outside(el) {
+                        return !el.closest('[role="main"]') && !el.closest('[role="banner"]');
+                    }
+                    var links = scope.querySelectorAll('a[href]');
+                    for (var i = 0; i < links.length; i++) {
+                        var path = "";
+                        try { path = new URL(links[i].href, location.href).pathname; } catch (e) { continue; }
+                        if (outside(links[i]) && M.isComposePath(path)) { links[i].click(); return true; }
+                    }
+                    var labelled = scope.querySelectorAll('[role="button"][aria-label], a[aria-label]');
+                    for (var j = 0; j < labelled.length; j++) {
+                        if (outside(labelled[j]) && M.isComposeLabel(labelled[j].getAttribute("aria-label"))) {
+                            labelled[j].click();
+                            return true;
+                        }
                     }
                     return false;
                 },
