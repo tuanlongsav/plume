@@ -136,6 +136,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                       mainWindowKey: window.isKeyWindow)
     }
 
+    /// Re-publishing the current count redraws the Dock badge, the menu bar
+    /// title and the app chip through their usual path.
+    @objc private func toggleHideUnreadCount() {
+        Preferences.hideUnreadCount.toggle()
+        controller.republishUnread()
+    }
+
     @objc private func toggleMenuBarIcon() {
         Preferences.menuBarIcon.toggle()
         applyMenuBarIcon()
@@ -189,6 +196,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                      action: #selector(toggleGlobalHotKey), keyEquivalent: "").target = self
         menu.addItem(withTitle: L.t("Hiện biểu tượng trên thanh menu", "Show in Menu Bar"),
                      action: #selector(toggleMenuBarIcon), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L.t("Ẩn số chưa đọc", "Hide Unread Count"),
+                     action: #selector(toggleHideUnreadCount), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: L.t("Thoát Plume", "Quit Plume"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         return menu
@@ -450,6 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(zoomOutPage):    return canZoomPage && PageZoom.canZoomOut(controller.pageZoom)
         case #selector(actualSizePage): return canZoomPage && !PageZoom.isActual(controller.pageZoom)
         case #selector(toggleMenuBarIcon): item.state = Preferences.menuBarIcon ? .on : .off
+        case #selector(toggleHideUnreadCount): item.state = Preferences.hideUnreadCount ? .on : .off
         case #selector(toggleGlobalHotKey): item.state = Preferences.globalHotKey ? .on : .off
         case #selector(summon):
             // Only the menu bar icon's menu has this item. In bubble mode it
@@ -495,6 +505,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L.t("Hiện biểu tượng trên thanh menu", "Show in Menu Bar"),
                         action: #selector(toggleMenuBarIcon), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: L.t("Ẩn số chưa đọc", "Hide Unread Count"),
+                        action: #selector(toggleHideUnreadCount), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: L.t("Phím tắt toàn cục \(Summon.hotKeyLabel)",
                                        "Global Shortcut \(Summon.hotKeyLabel)"),
                         action: #selector(toggleGlobalHotKey), keyEquivalent: "").target = self

@@ -42,7 +42,7 @@ final class MenuBarItem: NSObject {
     /// The notification fires on every title change; rewriting an unchanged
     /// title still re-lays out the menu bar, so only write a new one.
     private func setUnread(_ count: Int) {
-        let title = Summon.statusTitle(unread: count)
+        let title = Summon.statusTitle(unread: count, hidden: Preferences.hideUnreadCount)
         guard title != shownTitle, let button = item.button else { return }
         shownTitle = title
         button.title = title

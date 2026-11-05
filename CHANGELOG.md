@@ -10,6 +10,9 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
   macOS 13.0–13.2 cần cập nhật macOS trước.
 - Plume không mời cập nhật lên một bản mà máy của bạn không chạy được.
 - Plume ▸ Giới thiệu Plume ghi phiên bản WebKit và macOS, giúp báo lỗi dễ hơn.
+- Tuỳ chọn ẩn số chưa đọc trên Dock, trên thanh menu và trên bong bóng (menu
+  Plume ▸ Ẩn số chưa đọc), khi con số đang chờ cũng là thứ gây phân tâm. Thông
+  báo vẫn đến như thường.
 - Chặn các trình theo dõi và quảng cáo bên thứ ba (Google Analytics,
   DoubleClick…) mà nội dung nhúng trong đoạn chat có thể tải về. Không đụng tới
   Messenger. Tắt trong menu Xem nếu cần.

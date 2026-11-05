@@ -199,7 +199,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
 
     private func applyTotalBadge() {
         bubbles.first.flatMap(chip)?
-            .setBadge(WebViewController.badgeLabel(unreadTotal))
+            .setBadge(WebViewController.badgeLabel(unreadTotal, hidden: Preferences.hideUnreadCount))
     }
 
     @objc private func unreadChanged(_ note: Notification) {
