@@ -68,7 +68,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
-        controller.load()
+        // The first load waits for the tracker blocker, briefly: a store
+        // that never answers must not leave the splash up for good.
+        var started = false
+        let start = { [weak self] in
+            guard !started else { return }
+            started = true
+            self?.controller.load()
+        }
+        controller.prepareTrackerBlocking(then: start)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: start)
         NSApp.plumeActivate()
         Updater.shared.scheduleLaunchCheck()
     }
@@ -242,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func followSystem() { controller.followSystemAppearance() }
     @objc private func toggleCompact() { controller.toggleCompact() }
     @objc private func toggleWebStyling() { controller.toggleWebStyling() }
+    @objc private func toggleBlockTrackers() { controller.toggleBlockTrackers() }
     @objc private func toggleChrome() {
         let visible = !(window.toolbar?.isVisible ?? true)
         window.toolbar?.isVisible = visible
@@ -425,6 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(followSystem):  item.state = Preferences.forceDark == nil ? .on : .off
         case #selector(toggleCompact): item.state = controller.isCompact ? .on : .off
         case #selector(toggleWebStyling): item.state = controller.isWebStyling ? .on : .off
+        case #selector(toggleBlockTrackers): item.state = controller.isBlockingTrackers ? .on : .off
         case #selector(toggleAlwaysOnTop): item.state = Preferences.alwaysOnTop ? .on : .off
         case #selector(setBubbleLimit(_:)):
             item.state = Preferences.bubbleLimit == item.tag ? .on : .off
@@ -546,6 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         compact.keyEquivalentModifierMask = [.command, .shift]
         compact.target = self
         viewMenu.addItem(withTitle: L.t("Tuỳ biến giao diện web", "Web Styling"), action: #selector(toggleWebStyling), keyEquivalent: "").target = self
+        viewMenu.addItem(withTitle: L.t("Chặn trình theo dõi bên thứ ba", "Block Third-Party Trackers"), action: #selector(toggleBlockTrackers), keyEquivalent: "").target = self
         viewMenu.addItem(.separator())
         let hideToolbar = viewMenu.addItem(withTitle: L.t("Ẩn thanh công cụ", "Hide Toolbar"), action: #selector(toggleChrome), keyEquivalent: "t")
         hideToolbar.keyEquivalentModifierMask = [.command, .option]   // macOS convention

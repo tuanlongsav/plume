@@ -38,6 +38,13 @@ enum Preferences {
         set { defaults.set(PageZoom.clamped(newValue), forKey: "plume.pageZoom") }
     }
 
+    /// Block third-party ad and analytics hosts (`TrackerRules`). Defaults to
+    /// on: the list holds nothing Messenger needs.
+    static var blockTrackers: Bool {
+        get { defaults.object(forKey: "plume.blockTrackers") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "plume.blockTrackers") }
+    }
+
     /// Show Plume's icon (and unread count) in the menu bar, and keep running
     /// in it when the main window is closed. Defaults to off.
     static var menuBarIcon: Bool {
