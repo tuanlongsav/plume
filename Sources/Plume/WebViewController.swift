@@ -82,6 +82,7 @@ final class WebViewController: NSViewController {
         wv.customUserAgent = Plume.userAgent
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
+        wv.pageZoom = CGFloat(Preferences.pageZoom)
         #if DEBUG
         // Safari ▸ Develop can attach to the page, so injected JS is debugged
         // in a real inspector instead of through PlumeTrace lines.
@@ -286,6 +287,18 @@ final class WebViewController: NSViewController {
         }
     }
 
+    // MARK: Page zoom (main window only; see `lendWebView`)
+
+    var pageZoom: Double { Preferences.pageZoom }
+
+    func setPageZoom(_ zoom: Double) {
+        let zoom = PageZoom.clamped(zoom)
+        Preferences.pageZoom = zoom
+        // Lent to the bubble card, the web view stays at 1; the new level
+        // applies when the main window takes it back.
+        if webView.superview === view { webView.pageZoom = CGFloat(zoom) }
+    }
+
     // MARK: Lending the web view to the chat bubble card
 
     /// Hand the live web view to the bubble card.
@@ -297,6 +310,11 @@ final class WebViewController: NSViewController {
     func lendWebView() -> WKWebView? {
         guard let wv = webView, wv.superview === view else { return webView }
         wv.removeFromSuperview()
+        // The card is sized to just clear Messenger's ~900 CSS-px breakpoint
+        // (`messengerFloor`); any zoom above 1 would shrink the viewport
+        // below it and drop the conversation from the card. The window's
+        // zoom comes back with `reclaimWebView`.
+        wv.pageZoom = 1
         return wv
     }
 
@@ -304,6 +322,7 @@ final class WebViewController: NSViewController {
     /// a main window with no web view in it is the one failure worth ruling out.
     func reclaimWebView() {
         guard let wv = webView, wv.superview !== view else { return }
+        wv.pageZoom = CGFloat(Preferences.pageZoom)
         wv.removeFromSuperview()
         wv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(wv, positioned: .below, relativeTo: view.subviews.first)
