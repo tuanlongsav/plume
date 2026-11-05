@@ -36,6 +36,20 @@ final class HostRulesTests: XCTestCase {
         XCTAssertFalse(Plume.isCallOrigin(host: "evilmessenger.com"))
     }
 
+    // The frame asking matters, not just the page it sits in.
+    func testCaptureGrantNeedsCallFrame() {
+        XCTAssertTrue(Plume.shouldAutoGrantCapture(originHost: "www.messenger.com",
+                                                   frameHost: "www.messenger.com"))
+        XCTAssertTrue(Plume.shouldAutoGrantCapture(originHost: "www.messenger.com",
+                                                   frameHost: "www.facebook.com"))
+        XCTAssertFalse(Plume.shouldAutoGrantCapture(originHost: "www.messenger.com",
+                                                    frameHost: "ads.example.com"))
+        XCTAssertFalse(Plume.shouldAutoGrantCapture(originHost: "www.messenger.com",
+                                                    frameHost: "static.fbcdn.net"))
+        XCTAssertFalse(Plume.shouldAutoGrantCapture(originHost: "example.com",
+                                                    frameHost: "www.messenger.com"))
+    }
+
     // Attachment CDN detection drives in-app download/PDF viewing.
     func testAttachmentHostDetection() {
         XCTAssertTrue(Plume.isAttachmentHost(URL(string: "https://cdn.fbsbx.com/v/t59.2708-21/x/doc.pdf?dl=1")!))

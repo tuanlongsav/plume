@@ -440,6 +440,8 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         NSApp.terminate(nil)
     }
 
+    /// Same algorithm as Scripts/swap_bundle.swift: afterwards `staged` holds
+    /// the old app, which the relaunch script deletes.
     private static func swap(_ staged: URL, into installed: URL) throws {
         // errno is read inside the closure: the path conversions on the way
         // out may overwrite it.
@@ -449,10 +451,30 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
             }
         }
         if err == 0 { return }
-        // Some file systems (e.g. network volumes) cannot swap; fall back to
-        // a replace, which is not atomic but keeps a consistent result.
         guard err == ENOTSUP || err == EINVAL else { throw UpdateFailure.installFailed }
-        _ = try FileManager.default.replaceItemAt(installed, withItemAt: staged)
+        // No RENAME_SWAP here (some network volumes): two renames, each
+        // atomic, with the old app put back if the second one fails, where
+        // replaceItemAt could fail halfway with nothing to roll back.
+        //
+        // The old app waits BESIDE the installed one, never in the staging
+        // dir: a failed install deletes that dir, and if the rollback also
+        // failed it would have held the only Plume left.
+        let from = staged.path, to = installed.path, old = installed.path + ".old"
+        // A leftover from an interrupted earlier fallback would make every
+        // later rename onto it fail (ENOTEMPTY). Safe to remove only while an
+        // app sits at the installed path: then it is not the last copy.
+        let fm = FileManager.default
+        if fm.fileExists(atPath: old), fm.fileExists(atPath: to) {
+            try? fm.removeItem(atPath: old)
+        }
+        guard rename(to, old) == 0 else { throw UpdateFailure.installFailed }
+        guard rename(from, to) == 0 else {
+            _ = rename(old, to)
+            throw UpdateFailure.installFailed
+        }
+        // Installed. Move the old app into the staging dir, which the
+        // relaunch script (or the next launch) removes; failing that, now.
+        if rename(old, from) != 0 { try? fm.removeItem(atPath: old) }
     }
 
     // MARK: Housekeeping

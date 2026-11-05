@@ -1607,8 +1607,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
             self?.pollMouse()
         }
         // Lets the system coalesce this wake-up with others; it runs for as
-        // long as bubble mode is on.
-        t.tolerance = 0.008
+        // long as bubble mode is on (AGENTS.md rule 7), so give it half a
+        // period of slack rather than a quarter.
+        t.tolerance = 0.015
         RunLoop.main.add(t, forMode: .common)
         mousePoll = t
     }
@@ -1645,7 +1646,10 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         } else {
             syncBubbleClickThrough()
         }
-        followCursorScreenIfNeeded()
+        // A pointer at rest cannot newly reach another display; only a hop
+        // already being counted down (`foreignScreenTicks`) needs the
+        // stationary ticks. Skips two screen searches on every idle poll.
+        if moved || foreignScreenTicks > 0 { followCursorScreenIfNeeded() }
         if isExpanded, card.isVisible {
             overlayKeepAliveTicks += 1
             if overlayKeepAliveTicks >= 90 {   // ~3s at 30 Hz

@@ -22,6 +22,10 @@ struct AppVersion: Comparable, Hashable, CustomStringConvertible {
             else { return nil }
             values.append(value)
         }
+        // `build` packs MINOR into two digits (as build_app.sh does), so a
+        // larger one would collide with the next MAJOR: 1.100 and 2.0 both
+        // came out as 20000. The release scripts refuse it; so does this.
+        guard values.dropFirst().allSatisfy({ $0 <= 99 }) else { return nil }
         components = values
     }
 

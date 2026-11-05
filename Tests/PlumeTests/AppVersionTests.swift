@@ -13,7 +13,7 @@ final class AppVersionTests: XCTestCase {
 
     func testRejectsAnythingElse() {
         for text in ["", "v", "1", "1.", ".1", "1.2.3.4", "a.b", "1.2-beta", "1..2",
-                     "nightly", "1.٢", "1234567.0"] {
+                     "nightly", "1.٢", "1234567.0", "1.100", "1.2.100"] {
             XCTAssertNil(AppVersion(text), text)
         }
     }
