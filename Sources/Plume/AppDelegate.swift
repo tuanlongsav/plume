@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private var chrome: ChromeToolbar!
 
+    /// Present only while the matching preference is on.
+    private var menuBarItem: MenuBarItem?
+    private var hotKey: GlobalHotKey?
+
     /// Bubble mode is restored once per launch, on the first load that
     /// actually succeeded — `onPageReady`, not `onChromeUpdate`.
     private var didRestoreMode = false
@@ -56,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.makeKeyAndOrderFront(nil)
 
         buildMenu()
+        applyMenuBarIcon()
+        applyGlobalHotKey(reportFailure: false)
 
         // Ask for notification permission, then load the page.
         let center = UNUserNotificationCenter.current()
@@ -88,8 +94,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Bubble mode deliberately hides the main window and leaves only panels,
         // which AppKit does not count as windows here — returning true would
-        // quit the app the instant we switch modes.
-        return !ChatBubbleController.isOpen
+        // quit the app the instant we switch modes. With the menu bar icon on,
+        // closing the window leaves Plume running there, notifications and all.
+        return !ChatBubbleController.isOpen && !Preferences.menuBarIcon
+    }
+
+    // MARK: Menu bar icon and global shortcut
+
+    /// Left click on the menu bar icon, or the global shortcut: bring the
+    /// chats up, or put them away when they are already in front (`Summon`).
+    @objc func summon() {
+        if let bubbles = ChatBubbleController.shared {
+            bubbles.toggleCardFromShortcut()
+            return
+        }
+        switch Summon.action(appActive: NSApp.isActive, appHidden: NSApp.isHidden,
+                             mainWindowVisible: window.isVisible,
+                             mainWindowKey: window.isKeyWindow) {
+        case .hide:
+            NSApp.hide(nil)
+        case .show:
+            if NSApp.isHidden { NSApp.unhide(nil) }
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.plumeActivate(fromShortcut: true)
+        }
+    }
+
+    @objc private func toggleMenuBarIcon() {
+        Preferences.menuBarIcon.toggle()
+        applyMenuBarIcon()
+    }
+
+    @objc private func toggleGlobalHotKey() {
+        Preferences.globalHotKey.toggle()
+        applyGlobalHotKey(reportFailure: true)
+    }
+
+    private func applyMenuBarIcon() {
+        guard Preferences.menuBarIcon else { menuBarItem = nil; return }
+        guard menuBarItem == nil else { return }
+        menuBarItem = MenuBarItem(
+            unread: controller.badgeCount,
+            onClick: { [weak self] in self?.summon() },
+            makeMenu: { [weak self] in self?.statusMenu() ?? NSMenu() })
+    }
+
+    /// The system refuses a combination another app has registered. At launch
+    /// that is silent (the preference stays on, for when the other app quits);
+    /// when the user has just turned it on, say so and turn it back off.
+    private func applyGlobalHotKey(reportFailure: Bool) {
+        hotKey = nil   // unregister first, or re-registering the same key fails
+        guard Preferences.globalHotKey else { return }
+        hotKey = GlobalHotKey(keyCode: Summon.hotKeyCode,
+                              modifiers: GlobalHotKey.controlOptionCommand) { [weak self] in
+            self?.summon()
+        }
+        guard hotKey == nil, reportFailure else { return }
+        Preferences.globalHotKey = false
+        let alert = NSAlert()
+        alert.messageText = L.t("Không dùng được phím tắt \(Summon.hotKeyLabel)",
+                                "Couldn't use the \(Summon.hotKeyLabel) shortcut")
+        alert.informativeText = L.t("Một ứng dụng khác đang dùng tổ hợp phím này.",
+                                    "Another app is already using this key combination.")
+        NSApp.plumeActivate()
+        if ChatBubbleController.isOpen { alert.window.level = .screenSaver }
+        alert.runModal()
+    }
+
+    /// Right-click menu of the menu bar icon. Built on each open, so its
+    /// titles and checkmarks are current; `validateMenuItem` fills them in.
+    private func statusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: L.t("Mở Plume", "Open Plume"), action: #selector(summon), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L.t("Bong bóng", "Chat Bubble"), action: #selector(toggleChatBubble), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L.t("Phím tắt toàn cục \(Summon.hotKeyLabel)",
+                                    "Global Shortcut \(Summon.hotKeyLabel)"),
+                     action: #selector(toggleGlobalHotKey), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L.t("Hiện biểu tượng trên thanh menu", "Show in Menu Bar"),
+                     action: #selector(toggleMenuBarIcon), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L.t("Thoát Plume", "Quit Plume"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        return menu
     }
 
     // MARK: Notification handling
@@ -334,6 +421,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case #selector(zoomInPage):     return canZoomPage && PageZoom.canZoomIn(controller.pageZoom)
         case #selector(zoomOutPage):    return canZoomPage && PageZoom.canZoomOut(controller.pageZoom)
         case #selector(actualSizePage): return canZoomPage && !PageZoom.isActual(controller.pageZoom)
+        case #selector(toggleMenuBarIcon): item.state = Preferences.menuBarIcon ? .on : .off
+        case #selector(toggleGlobalHotKey): item.state = Preferences.globalHotKey ? .on : .off
+        case #selector(summon):
+            // Only the menu bar icon's menu has this item. In bubble mode it
+            // folds or unfolds the card; otherwise it opens or hides Plume.
+            if ChatBubbleController.isOpen {
+                item.title = L.t("Mở / gập bong bóng", "Open / Fold Chat Bubble")
+            } else {
+                let hide = Summon.action(appActive: NSApp.isActive, appHidden: NSApp.isHidden,
+                                         mainWindowVisible: window.isVisible,
+                                         mainWindowKey: window.isKeyWindow) == .hide
+                item.title = hide ? L.t("Ẩn Plume", "Hide Plume") : L.t("Mở Plume", "Open Plume")
+            }
         case #selector(toggleShortcuts): item.state = Preferences.shortcuts ? .on : .off
         case #selector(toggleAutoUpdate): item.state = Preferences.autoUpdateCheck ? .on : .off
         case #selector(jumpToConversation(_:)), #selector(nextConversation),
@@ -363,6 +463,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         appMenu.addItem(withTitle: L.t("Giới thiệu Plume", "About Plume"), action: #selector(showAbout), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: L.t("Kiểm tra cập nhật…", "Check for Updates…"), action: #selector(Updater.checkNow(_:)), keyEquivalent: "").target = Updater.shared
         appMenu.addItem(withTitle: L.t("Tự động kiểm tra cập nhật", "Check for Updates Automatically"), action: #selector(toggleAutoUpdate), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: L.t("Hiện biểu tượng trên thanh menu", "Show in Menu Bar"),
+                        action: #selector(toggleMenuBarIcon), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: L.t("Phím tắt toàn cục \(Summon.hotKeyLabel)",
+                                       "Global Shortcut \(Summon.hotKeyLabel)"),
+                        action: #selector(toggleGlobalHotKey), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L.t("Ẩn Plume", "Hide Plume"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: L.t("Ẩn các ứng dụng khác", "Hide Others"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -507,6 +613,18 @@ extension NSApplication {
             activate()
         } else {
             activate(ignoringOtherApps: userInitiated)
+        }
+    }
+
+    /// The menu bar icon or the global shortcut: the user asked for Plume
+    /// from inside another app. Cooperative `activate()` may decline while
+    /// that app stays frontmost, and then the window would come up behind it;
+    /// insist once if it did.
+    func plumeActivate(fromShortcut: Bool) {
+        plumeActivate()
+        guard fromShortcut else { return }
+        DispatchQueue.main.async { [self] in
+            if !isActive { activate(ignoringOtherApps: true) }
         }
     }
 }

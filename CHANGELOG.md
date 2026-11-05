@@ -10,6 +10,11 @@ cập nhật — viết cho người dùng, bằng tiếng Việt.
   macOS 13.0–13.2 cần cập nhật macOS trước.
 - Plume không mời cập nhật lên một bản mà máy của bạn không chạy được.
 - Plume ▸ Giới thiệu Plume ghi phiên bản WebKit và macOS, giúp báo lỗi dễ hơn.
+- Tuỳ chọn biểu tượng Plume trên thanh menu, kèm số đoạn chat chưa đọc: bấm
+  để mở hoặc ẩn Plume, bấm chuột phải để có menu. Khi bật, đóng cửa sổ chính
+  Plume vẫn chạy và vẫn báo tin nhắn. Bật trong menu Plume.
+- Tuỳ chọn phím tắt toàn cục ⌃⌥⌘M để mở hoặc ẩn Plume từ bất kỳ ứng dụng nào
+  (ở chế độ bong bóng: mở hoặc gập bong bóng). Bật trong menu Plume.
 - Phóng to, thu nhỏ trang Messenger bằng ⌘+ / ⌘− (menu Xem), ⌘0 về kích
   thước thật; Plume nhớ mức đã chọn cho cửa sổ chính.
 - ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).

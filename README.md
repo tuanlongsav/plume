@@ -38,6 +38,10 @@ older Plume that cannot update itself installs the new DMG by hand once.
   installing, and only installs archives signed with Plume's update key and
   apps signed with its Developer ID
 - Always-on-top window; toolbar & theming toggles
+- Optional menu bar icon with the unread count (Plume keeps running there when
+  the window is closed) and an optional global shortcut, ⌃⌥⌘M, to bring Plume
+  up or put it away from any app
+- Page zoom (⌘+ ⌘− ⌘0), remembered
 - Remembers window size & position; full-screen, back/forward, reload
 
 Plume deliberately injects almost no CSS into Messenger. Decorative layers we

@@ -21,7 +21,7 @@ final class WebViewController: NSViewController {
     /// When `followMessengerSite` last sent the feed on to the chat list.
     private var lastFeedRedirect: Date?
     /// The count the Dock badge shows now.
-    private var badgeCount = 0
+    private(set) var badgeCount = 0
     private var zeroRecheck: DispatchWorkItem?
 
     /// Single in-flight auto-retry, cancellable so a manual retry or a

@@ -133,6 +133,35 @@ final class FeatherView: NSView {
 
     func stopBreathing() { layer?.removeAnimation(forKey: "breathing") }
 
+    // MARK: Menu bar icon
+
+    /// The leaf as a menu bar template image: filled, with the spine cut out,
+    /// because a 1 pt outline is too faint at this size. Template, so the menu
+    /// bar tints it for light, dark and highlighted states itself.
+    static func menuBarImage(height: CGFloat = 16) -> NSImage {
+        // The leaf spans x 15…49 of the 64×72 viewBox; crop to it.
+        let crop = CGRect(x: 13, y: 0, width: 38, height: 72)
+        let scale = height / crop.height
+        let image = NSImage(size: NSSize(width: ceil(crop.width * scale), height: height),
+                            flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.translateBy(x: -crop.minX, y: -crop.minY)
+            ctx.addPath(FeatherView.leafPath())
+            ctx.setFillColor(NSColor.black.cgColor)
+            ctx.fillPath()
+            ctx.setBlendMode(.clear)
+            ctx.addPath(FeatherView.spineAndBarbsPath(includeBarbs: false))
+            ctx.setLineWidth(4)
+            ctx.setLineCap(.round)
+            ctx.strokePath()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Plume"
+        return image
+    }
+
     // MARK: Paths (viewBox coords, y flipped to CALayer's y-up space)
 
     private static func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {

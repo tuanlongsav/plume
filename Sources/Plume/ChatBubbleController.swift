@@ -854,6 +854,21 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         refreshUnreadFlags()
     }
 
+    /// The menu bar icon or the global shortcut, in bubble mode: fold the card
+    /// away if it is open, else unfold it on the conversation the page is on
+    /// (or the list). Never the main window: it is hidden on purpose here.
+    func toggleCardFromShortcut() {
+        if isExpanded, card.isVisible { collapse(); return }
+        let live = ThreadURL.id(from: webView.url)
+        if let i = headIndex(for: live), let convo = conversation(of: bubbles[i]) {
+            lastOpenedIndex = i
+            open(convo, toggle: false)
+        } else {
+            lastOpenedIndex = 0
+            open(nil, toggle: false)
+        }
+    }
+
     /// A native notification was clicked. `activate` replays the click in the
     /// page, which routes Messenger to that conversation; the card then opens
     /// on wherever the page landed — never the main window, never NSApp.activate.

@@ -38,6 +38,20 @@ enum Preferences {
         set { defaults.set(PageZoom.clamped(newValue), forKey: "plume.pageZoom") }
     }
 
+    /// Show Plume's icon (and unread count) in the menu bar, and keep running
+    /// in it when the main window is closed. Defaults to off.
+    static var menuBarIcon: Bool {
+        get { defaults.bool(forKey: "plume.menuBarIcon") }
+        set { defaults.set(newValue, forKey: "plume.menuBarIcon") }
+    }
+
+    /// Register `Summon.hotKeyLabel` system-wide. Defaults to off: a global
+    /// shortcut takes the key from every other app.
+    static var globalHotKey: Bool {
+        get { defaults.bool(forKey: "plume.globalHotKey") }
+        set { defaults.set(newValue, forKey: "plume.globalHotKey") }
+    }
+
     /// Keep the window floating above other apps. Defaults to off.
     static var alwaysOnTop: Bool {
         get { defaults.bool(forKey: "plume.alwaysOnTop") }
