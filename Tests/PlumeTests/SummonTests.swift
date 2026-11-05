@@ -28,5 +28,6 @@ final class SummonTests: XCTestCase {
         XCTAssertEqual(Summon.statusTitle(unread: 0), "")
         XCTAssertEqual(Summon.statusTitle(unread: 3), "3")
         XCTAssertEqual(Summon.statusTitle(unread: 120), "99+")
+        XCTAssertEqual(Summon.statusTitle(unread: 3, hidden: true), "")
     }
 }

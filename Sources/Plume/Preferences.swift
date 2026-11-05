@@ -45,6 +45,14 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "plume.blockTrackers") }
     }
 
+    /// Show no unread count on the Dock icon, the menu bar icon or the app
+    /// chip, for when a number waiting is itself a distraction. Defaults to
+    /// off. Notifications still arrive.
+    static var hideUnreadCount: Bool {
+        get { defaults.bool(forKey: "plume.hideUnreadCount") }
+        set { defaults.set(newValue, forKey: "plume.hideUnreadCount") }
+    }
+
     /// Show Plume's icon (and unread count) in the menu bar, and keep running
     /// in it when the main window is closed. Defaults to off.
     static var menuBarIcon: Bool {

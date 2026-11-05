@@ -32,6 +32,13 @@ final class UnreadCountTests: XCTestCase {
         XCTAssertEqual(WebViewController.badgeLabel(100), "99+")
     }
 
+    // "Hide Unread Count" blanks every badge, whatever the count.
+    func testHiddenBadgeShowsNothing() {
+        for count in [0, 1, 42, 500] {
+            XCTAssertNil(WebViewController.badgeLabel(count, hidden: true), "\(count)")
+        }
+    }
+
     // On facebook.com the title is only a trigger (its count includes
     // notifications); these pin what the parser itself does with those titles.
     func testFacebookTitleShapes() {

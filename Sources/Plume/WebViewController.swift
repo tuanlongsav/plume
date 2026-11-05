@@ -299,15 +299,18 @@ final class WebViewController: NSViewController {
         UnreadTitle.count(from: title) ?? 0
     }
 
-    /// Dock and app-chip badge text: nothing at zero, capped at "99+".
-    static func badgeLabel(_ count: Int) -> String? {
-        count > 99 ? "99+" : (count > 0 ? String(count) : nil)
+    /// Dock, menu bar and app-chip badge text: nothing at zero, capped at
+    /// "99+", and nothing at all while the user has asked for no count
+    /// (`Preferences.hideUnreadCount`). Notifications are unaffected.
+    static func badgeLabel(_ count: Int, hidden: Bool = false) -> String? {
+        guard !hidden else { return nil }
+        return count > 99 ? "99+" : (count > 0 ? String(count) : nil)
     }
 
     // Called on the main thread (from title KVO); no dispatch needed.
     private func setBadge(_ count: Int) {
         badgeCount = count
-        let label = Self.badgeLabel(count)
+        let label = Self.badgeLabel(count, hidden: Preferences.hideUnreadCount)
         if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
         // The chat bubble badges itself from this instead of watching the DOM.
         NotificationCenter.default.post(name: .plumeUnreadChanged, object: nil,

@@ -26,7 +26,7 @@ enum Summon {
 
     /// The unread count beside the menu bar icon: the Dock badge's text, and
     /// nothing at all at zero so the icon stays narrow.
-    static func statusTitle(unread: Int) -> String {
-        WebViewController.badgeLabel(unread) ?? ""
+    static func statusTitle(unread: Int, hidden: Bool = false) -> String {
+        WebViewController.badgeLabel(unread, hidden: hidden) ?? ""
     }
 }
