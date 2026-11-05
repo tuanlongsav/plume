@@ -181,7 +181,7 @@ Trên máy **macOS 13.x** (mức thấp nhất được hỗ trợ là 13.3), th
 - [ ] Badge đỏ trên bong bóng không bị cắt góc; nút "Thử lại" (khi mất mạng) còn viền sáng.
 - [ ] Bong bóng nổi trên một app khác đang toàn màn hình và trong Stage Manager.
 - [ ] Gọi thoại/video: macOS hỏi quyền micro/camera, cuộc gọi chạy.
-- [ ] Kiểm tra cập nhật thủ công: báo đúng (đã mới nhất, hoặc "bản mới nhất cho máy này").
+- [ ] Kiểm tra cập nhật thủ công: báo đúng ("Bạn đang dùng bản mới nhất", hoặc "Plume X.Y cần macOS … trở lên" khi bản mới nhất cần macOS mới hơn).
 
 Vòng khung hình của macOS 13 (Timer) thử được trên máy mới hơn bằng bản Debug:
 `defaults write com.htl.plume plume.debugTimerFrames -bool YES`, rồi

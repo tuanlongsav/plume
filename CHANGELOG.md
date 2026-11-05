@@ -4,7 +4,7 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
-## 1.2 — chưa phát hành
+## 1.2 — 2026-11-05
 
 - Chạy được trên macOS 13.3 (Ventura) trở lên, gồm các máy Mac 2017. Máy
   macOS 13.0–13.2 cần cập nhật macOS trước.
