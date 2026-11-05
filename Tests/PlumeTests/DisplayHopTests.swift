@@ -46,4 +46,23 @@ final class DisplayHopTests: XCTestCase {
         XCTAssertFalse(DisplayHop.preferRightEdge(
             from: upper, to: lower, headX: 40, half: half, margin: margin))
     }
+
+    /// The follow-the-cursor countdown starts only on a poll that saw the
+    /// pointer move. Measured against the hover position, which the mouse
+    /// monitors rewrite on every event, a pointer that came to rest on the
+    /// other display never had: each poll is measured from the one before.
+    func testPollMotionMeasuresFromThePreviousPoll() {
+        var motion = DisplayHop.PollMotion()
+        XCTAssertTrue(motion.moved(to: CGPoint(x: 10, y: 10)))      // first poll
+        XCTAssertFalse(motion.moved(to: CGPoint(x: 10, y: 10)))     // at rest
+        XCTAssertTrue(motion.moved(to: CGPoint(x: -400, y: 300)))   // moved since
+        XCTAssertFalse(motion.moved(to: CGPoint(x: -400, y: 300)))
+    }
+
+    func testPollMotionIgnoresSubPointJitter() {
+        var motion = DisplayHop.PollMotion()
+        _ = motion.moved(to: CGPoint(x: 10, y: 10))
+        XCTAssertFalse(motion.moved(to: CGPoint(x: 10.3, y: 10.2)))
+        XCTAssertTrue(motion.moved(to: CGPoint(x: 10.3, y: 11)))
+    }
 }

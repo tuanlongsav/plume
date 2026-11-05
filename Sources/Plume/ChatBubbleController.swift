@@ -1556,6 +1556,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     /// need Accessibility for some paths); a 30 Hz poll needs neither and is
     /// what actually lets a drag finish on the other screen.
     private var mousePoll: Timer?
+    private var pollMotion = DisplayHop.PollMotion()
     private var foreignScreenTicks = 0
     /// While the card is open, occasionally re-assert overlay stacking — fullscreen
     /// peers can demote the titled card without touching the borderless bubbles.
@@ -1637,6 +1638,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     private func stopMousePoll() {
         mousePoll?.invalidate()
         mousePoll = nil
+        pollMotion = DisplayHop.PollMotion()
         foreignScreenTicks = 0
     }
 
@@ -1669,7 +1671,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // A pointer at rest cannot newly reach another display; only a hop
         // already being counted down (`foreignScreenTicks`) needs the
         // stationary ticks. Skips two screen searches on every idle poll.
-        if moved || foreignScreenTicks > 0 { followCursorScreenIfNeeded() }
+        // `pollMotion`, not `moved`: see `DisplayHop.PollMotion`.
+        let movedSincePoll = pollMotion.moved(to: p)
+        if movedSincePoll || foreignScreenTicks > 0 { followCursorScreenIfNeeded() }
         if isExpanded, card.isVisible {
             overlayKeepAliveTicks += 1
             if overlayKeepAliveTicks >= 90 {   // ~3s at 30 Hz

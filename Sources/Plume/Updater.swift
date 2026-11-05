@@ -51,6 +51,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private var armed = false
     /// A check, download or install is under way.
     private var busy = false
+    /// Check for Updates… was chosen during an automatic check, which then
+    /// answers as a manual one would instead of ending in silence.
+    private var manualAnswerWanted = false
     private var job: (candidate: UpdateCandidate, manifest: UpdateManifest)?
     private var downloadTask: URLSessionDownloadTask?
     private var downloadedZip: URL?
@@ -83,7 +86,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// Plume ▸ Check for Updates…: always answers, ignores "Skip This Version".
     @objc func checkNow(_ sender: Any?) {
         if busy {
-            progress?.bringToFront()
+            // A download or install has its window; a check has nothing on
+            // screen yet.
+            if let progress { progress.bringToFront() } else { manualAnswerWanted = true }
             return
         }
         let eligibility = Self.eligibility()
@@ -146,6 +151,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private func handleCheck(data: Data?, response: URLResponse?, error: Error?,
                              current: AppVersion, manual: Bool) {
         busy = false
+        let manual = claimManualAnswer(manual)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         // Only a verdict starts the daily interval (`markChecked`); anything
@@ -189,6 +195,12 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         case .available(let candidate):
             fetchManifest(for: candidate, current: current, manual: manual)
         }
+    }
+
+    /// Folds a Check for Updates… chosen while this check was in flight into it.
+    private func claimManualAnswer(_ manual: Bool) -> Bool {
+        defer { manualAnswerWanted = false }
+        return manual || manualAnswerWanted
     }
 
     /// A check reached a verdict: the next automatic one is due in a day.
@@ -237,6 +249,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     private func handleManifest(data: Data?, response: URLResponse?, error: Error?,
                                 candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
         busy = false
+        let manual = claimManualAnswer(manual)
         let verdict = UpdateFeed.judgeManifest(
             data: data, status: (response as? HTTPURLResponse)?.statusCode ?? 0,
             failed: error != nil, candidate: candidate,
@@ -256,7 +269,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         case .unsupported(let minimum):
             // Nothing to offer this Mac; an automatic check stays quiet.
             markChecked()
-            if manual { showNewestForThisMac(current, newer: candidate.version, needs: minimum) }
+            if manual { showLatestNeedsNewerSystem(current, newer: candidate.version, needs: minimum) }
         case .offer(let manifest):
             markChecked()
             offer(candidate, manifest: manifest, current: current, manual: manual)
@@ -527,14 +540,21 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func showNewestForThisMac(_ current: AppVersion, newer: AppVersion, needs minimum: String) {
+    /// Only the latest release is read, so a version between it and this one
+    /// that still runs here is unknown (a Mac that missed the last release
+    /// for its macOS): never claim this is the newest for this Mac.
+    private func showLatestNeedsNewerSystem(_ current: AppVersion, newer: AppVersion,
+                                            needs minimum: String) {
         let page = UpdateFeed.allReleasesPageURL(repo: Preferences.updateRepo)
         let buttons = page == nil ? [] : ["OK", L.t("Mở trang Releases", "Open Releases Page")]
-        if present(L.t("Plume \(current) là bản mới nhất cho máy này",
-                       "Plume \(current) is the newest version for this Mac"),
-                   L.t("Plume \(newer) cần macOS \(minimum) trở lên.",
-                       "Plume \(newer) needs macOS \(minimum) or later."),
-                   buttons: buttons) == .alertSecondButtonReturn, let page {
+        var detail = L.t("Máy này đang dùng Plume \(current).", "This Mac has Plume \(current).")
+        if page != nil {
+            detail += " " + L.t("Bản nào nằm giữa hai bản này mà chạy được trên máy này đều có trên trang Releases.",
+                                "Any version between the two that runs on this Mac is on the Releases page.")
+        }
+        if present(L.t("Plume \(newer) cần macOS \(minimum) trở lên",
+                       "Plume \(newer) needs macOS \(minimum) or later"),
+                   detail, buttons: buttons) == .alertSecondButtonReturn, let page {
             NSWorkspace.shared.open(page)
         }
     }
