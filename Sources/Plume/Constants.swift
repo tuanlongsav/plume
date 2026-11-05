@@ -99,6 +99,13 @@ enum Plume {
         matches(host, in: callHosts)
     }
 
+    /// Silent camera/mic only when the top-level page AND the frame asking
+    /// are call surfaces. `origin` is the top-level document's, so judged on
+    /// its own a third-party frame embedded in messenger.com passed as ours.
+    static func shouldAutoGrantCapture(originHost: String, frameHost: String) -> Bool {
+        isCallOrigin(host: originHost) && isCallOrigin(host: frameHost)
+    }
+
     /// File-attachment CDN. Deliberately SEPARATE from `internalHosts` and from
     /// `fbcdn.net` (the inline image/video CDN): `fbsbx.com` serves user file
     /// attachments with `Content-Disposition: attachment`. It must stay OUT of

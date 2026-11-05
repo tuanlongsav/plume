@@ -4,6 +4,15 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
+## 1.2 — chưa phát hành
+
+- ⌘W đóng cửa sổ (trình xem PDF, cửa sổ cuộc gọi, cửa sổ chính).
+- Trên messenger.com, số chưa đọc trên Dock không còn nhấp nháy về 0 khi có
+  tin nhắn mới.
+- Thông báo cùng một đoạn chat gộp làm một thay vì xếp chồng; thông báo từ
+  cửa sổ cuộc gọi nay cũng hiện ra.
+- Mở tệp đính kèm hết hạn không còn làm tải lại Messenger (và mất bong bóng).
+
 ## 1.1 — 2026-11-04
 
 - Chạy được với tài khoản Meta đã chuyển Messenger sang Facebook

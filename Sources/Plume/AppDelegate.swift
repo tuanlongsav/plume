@@ -236,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.controller.confirmAndDeleteConversation(
                     url: convo.url, name: convo.name, completion: done)
             }
+            self.controller.republishUnread()
             self.window.orderOut(nil)
             Preferences.bubbleMode = true
         }
@@ -428,6 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         mainMenu.addItem(windowItem)
         let windowMenu = NSMenu(title: L.t("Cửa sổ", "Window"))
         windowItem.submenu = windowMenu
+        // Without it no window — PDF viewer, call popup, main — closed on ⌘W.
+        windowMenu.addItem(withTitle: L.t("Đóng", "Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windowMenu.addItem(withTitle: L.t("Thu nhỏ", "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: L.t("Thu phóng", "Zoom"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())
