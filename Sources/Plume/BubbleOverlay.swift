@@ -3,19 +3,18 @@ import AppKit
 /// Window level + Space membership for bubbles and the chat card.
 ///
 /// `.statusWindow` / `.floating` sit *below* another app's fullscreen content.
-/// `.screenSaver` is what actually stacks above a fullscreen Space; combined
-/// with `fullScreenAuxiliary` + `canJoinAllSpaces` the panel joins that Space
-/// instead of staying on the desktop Space behind it.
+/// `.screenSaver` is what actually stacks above a fullscreen Space.
+/// Apple marks `.fullScreenPrimary`, `.fullScreenAuxiliary` and
+/// `.canJoinAllApplications` as mutually exclusive: setting both auxiliary
+/// and canJoinAllApplications left panels stuck on the desktop Space behind
+/// another app's fullscreen window (visible again only after leaving it).
 enum PlumeOverlay {
     static let level = NSWindow.Level.screenSaver
 
+    /// Join-all Spaces + Stage Manager / fullscreen overlays. No
+    /// `.fullScreenAuxiliary` — mutually exclusive with `.canJoinAllApplications`.
     static var collectionBehavior: NSWindow.CollectionBehavior {
-        // .canJoinAllApplications keeps the panels over another app's
-        // full-screen Space and in Stage Manager. Its symbol first appeared in
-        // the macOS 15 SDK, which is why it was gated on 15, but the SDK
-        // declares it available from 13.0, so every supported system gets it.
-        [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle,
-         .canJoinAllApplications]
+        [.canJoinAllSpaces, .stationary, .ignoresCycle, .canJoinAllApplications]
     }
 
     static func apply(to window: NSWindow) {

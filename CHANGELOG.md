@@ -4,6 +4,13 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
+## 1.3 — chưa phát hành
+
+- Bong bóng và cửa sổ chat nổi lại hiện trên app đang toàn màn hình (trước đó
+  kẹt sau Space desktop cho đến khi chuyển về màn hình chính).
+- Trên facebook.com/messages, số chưa đọc trên Dock không còn về 0 nhầm khi
+  đang mở một đoạn chat trong bong bóng.
+
 ## 1.2 — 2026-11-05
 
 - Chạy được trên macOS 13.3 (Ventura) trở lên, gồm các máy Mac 2017. Máy

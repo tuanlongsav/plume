@@ -730,6 +730,15 @@ enum InjectedScript {
         window.__plumeUnreadCount = function () {
             try {
                 var rows = plumeListRows(), n = 0;
+                if (!rows.length) {
+                    // Empty: either no chats, or the inbox is not in the DOM
+                    // (card-thread clip / SPA settle). Only trust zero when the
+                    // list grid is still mounted — otherwise a transient miss
+                    // blanked the Dock badge on every new message while the
+                    // bubble card was open.
+                    return document.querySelector('[role="navigation"] [role="grid"]')
+                        ? 0 : -1;
+                }
                 for (var i = 0; i < rows.length; i++) if (plumeRowUnread(rows[i])) n++;
                 return n;
             } catch (e) { return -1; }

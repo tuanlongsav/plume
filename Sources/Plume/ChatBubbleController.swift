@@ -190,7 +190,9 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
     @objc private func activeSpaceChanged() {
         // Entering another app's fullscreen Space can leave join-all panels on
         // the desktop Space behind it until they are ordered front again.
-        promoteOverlayStack()
+        // One immediate orderFront is not enough: Mission Control settles over
+        // several hundred ms, so use the same delayed ladder as opening the card.
+        scheduleOverlayPromote()
     }
 
     /// Last total seen, so a rebuilt app chip does not lose its badge until
@@ -819,16 +821,7 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         card.makeKey()
         // makeKey / Space transitions can demote the card for a beat — re-pin
         // after the run loop and again once Mission Control settles.
-        overlayPromoteWork.forEach { $0.cancel() }
-        overlayPromoteWork.removeAll()
-        for delay in [0.0, 0.05, 0.2, 0.5, 1.0, 2.0] as [TimeInterval] {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, self.isExpanded else { return }
-                self.promoteOverlayStack()
-            }
-            overlayPromoteWork.append(work)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-        }
+        scheduleOverlayPromote(whileExpandedOnly: true)
         // Unfold: a small scale on the content LAYER, mirroring the fold. A
         // window-frame animation would re-lay-out the page on every frame,
         // which is what made the "nice" opening the slow one.
@@ -946,8 +939,26 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         if tether.isVisible {
             tether.orderFrontRegardless()
         }
-        for panel in bubbles where panel.isVisible {
+        // Always order heads front: on a foreign fullscreen Space `isVisible`
+        // can be false while the panel is still alive on the desktop Space.
+        for panel in bubbles {
             panel.orderFrontRegardless()
+        }
+    }
+
+    /// Re-pin overlays now and again while Mission Control / fullscreen settles.
+    /// `whileExpandedOnly` matches card-open: stop once the user folds the card.
+    private func scheduleOverlayPromote(whileExpandedOnly: Bool = false) {
+        overlayPromoteWork.forEach { $0.cancel() }
+        overlayPromoteWork.removeAll()
+        for delay in [0.0, 0.05, 0.2, 0.5, 1.0, 2.0] as [TimeInterval] {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.bubbles.isEmpty else { return }
+                if whileExpandedOnly, !self.isExpanded { return }
+                self.promoteOverlayStack()
+            }
+            overlayPromoteWork.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 
@@ -1674,14 +1685,12 @@ final class ChatBubbleController: NSObject, NSWindowDelegate {
         // `pollMotion`, not `moved`: see `DisplayHop.PollMotion`.
         let movedSincePoll = pollMotion.moved(to: p)
         if movedSincePoll || foreignScreenTicks > 0 { followCursorScreenIfNeeded() }
-        if isExpanded, card.isVisible {
-            overlayKeepAliveTicks += 1
-            if overlayKeepAliveTicks >= 90 {   // ~3s at 30 Hz
-                overlayKeepAliveTicks = 0
-                promoteOverlayStack()
-            }
-        } else {
+        // Collapsed heads need the same keep-alive: without it they sink behind
+        // a newly entered fullscreen Space until the user leaves that Space.
+        overlayKeepAliveTicks += 1
+        if overlayKeepAliveTicks >= 90 {   // ~3s at 30 Hz
             overlayKeepAliveTicks = 0
+            promoteOverlayStack()
         }
     }
 

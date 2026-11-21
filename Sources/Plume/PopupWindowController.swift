@@ -57,7 +57,12 @@ final class PopupWindowController: NSWindowController {
         // would otherwise open underneath. Same treatment as the file picker.
         if ChatBubbleController.isOpen {
             window.level = .screenSaver
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            // Same mutually exclusive choice as PlumeOverlay: canJoinAllApplications,
+            // not fullScreenAuxiliary — otherwise a call window sinks behind the
+            // caller's fullscreen Space.
+            window.collectionBehavior = [
+                .canJoinAllSpaces, .stationary, .ignoresCycle, .canJoinAllApplications
+            ]
         }
         window.center()
 

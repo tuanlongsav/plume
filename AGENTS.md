@@ -112,11 +112,13 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
    `HostRulesTests`.
 7. **Bubble mode shares one web view** between the main window and the card.
    Bubbles and card sit at `.screenSaver` level with `canJoinAllSpaces` +
-   `fullScreenAuxiliary` (`PlumeOverlay`); menus must be lifted above them
-   (`ChipMenuLift`). Timers, observers and display links capture `[weak self]`
-   (the frame loop runs on a `BubbleFrameDriver`: a display link on macOS
-   14+, a 60 Hz timer on 13; both call back weakly). Anything that runs for the
-   whole of bubble mode needs a timer tolerance and must do no work when idle.
+   `canJoinAllApplications` (`PlumeOverlay` — never combine with
+   `fullScreenAuxiliary`; Apple marks them mutually exclusive). Menus must be
+   lifted above them (`ChipMenuLift`). Timers, observers and display links
+   capture `[weak self]` (the frame loop runs on a `BubbleFrameDriver`: a
+   display link on macOS 14+, a 60 Hz timer on 13; both call back weakly).
+   Anything that runs for the whole of bubble mode needs a timer tolerance and
+   must do no work when idle.
 8. **Privacy.** `PlumeTrace.log` is DEBUG-only; never write contact names,
    message text or cursor positions to disk in release builds. Conversation
    snapshots never leave the machine.

@@ -858,7 +858,7 @@ extension WebViewController: WKUIDelegate {
             panel.beginSheetModal(for: host, completionHandler: finish)
         } else {
             panel.level = .screenSaver
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.collectionBehavior = PlumeOverlay.collectionBehavior
             panel.begin(completionHandler: finish)
         }
     }
