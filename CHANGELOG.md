@@ -4,8 +4,10 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
-## 1.3 — chưa phát hành
+## 1.3 — 2026-11-22
 
+- Plume kiểm tra và tải bản mới từ máy chủ cập nhật ota.htl-8.com (thay cho
+  GitHub); vẫn chỉ cài bản có chữ ký của Plume.
 - Bong bóng và cửa sổ chat nổi lại hiện trên app đang toàn màn hình (trước đó
   kẹt sau Space desktop cho đến khi chuyển về màn hình chính).
 - Trên facebook.com/messages, số chưa đọc trên Dock không còn về 0 nhầm khi
