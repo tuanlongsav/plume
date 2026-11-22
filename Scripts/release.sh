@@ -292,6 +292,11 @@ PUBLISH_CMD=(node "$HTL_OTA/bin/htl-ota.mjs" publish plume "$ZIP"
     --min-os "$MIN_OS" --sign-key "$KEY" --attach "$DMG")
 
 step "Tag + publish"
+# Dry run first: htl-ota refuses a build whose files are already on ota with
+# different bytes (e.g. an earlier test-channel run of the same build). Catch
+# that before the tag goes public.
+"${PUBLISH_CMD[@]}" --dry-run >/dev/null \
+    || die "htl-ota dry run refused this release (see above); nothing tagged. Bump the build if plume/$BUILD/ already exists."
 if [[ "$TAG_ORIGIN" -eq 1 ]]; then
     git tag -a "$TAG" -m "Plume $VERSION"
     git push origin "$TAG"
