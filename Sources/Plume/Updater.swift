@@ -2,12 +2,12 @@ import AppKit
 import Security
 import UserNotifications
 
-/// Self-update from GitHub Releases, without Sparkle.
+/// Self-update from ota.htl-8.com (htl-ota), without Sparkle.
 ///
 /// Trust is the same as Sparkle's: the zip must carry an Ed25519 signature by
 /// the key in `UpdateKeys`, and the unpacked app must be signed by Plume's
-/// Developer ID team. The requests are an unauthenticated `releases/latest`
-/// and, only when that names a newer version, its small manifest (so a
+/// Developer ID team; the server is trusted for neither. The requests are one
+/// small `latest.json` (it carries the signature and the minimum macOS, so a
 /// release this Mac cannot run is never offered), plus the download when the
 /// user says Update: no cookies and nothing but a User-Agent, once a day.
 ///
@@ -41,8 +41,12 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         let config = URLSessionConfiguration.ephemeral   // no cookies, no cache
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 15 * 60
-        let version = AppVersion.current?.description ?? "dev"
-        config.httpAdditionalHeaders = ["User-Agent": "Plume/\(version) (macOS)"]
+        // `<app>/<version> (<build>)`: the server logs it, which is how we
+        // tell which Macs have moved off an old release.
+        let current = AppVersion.current
+        let version = current?.description ?? "dev"
+        let build = current.map { String($0.build) } ?? "0"
+        config.httpAdditionalHeaders = ["User-Agent": "\(UpdateFeed.app)/\(version) (\(build))"]
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
@@ -135,13 +139,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     // MARK: Check
 
     private func check(manual: Bool) {
-        guard let current = AppVersion.current,
-              let url = UpdateFeed.latestReleaseURL(repo: Preferences.updateRepo)
-        else { return }
+        guard let current = AppVersion.current else { return }
         busy = true
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        let request = URLRequest(url: UpdateFeed.feedURL)
         session.dataTask(with: request) { [weak self] data, response, error in
             Self.onRunLoop { self?.handleCheck(data: data, response: response, error: error,
                                                current: current, manual: manual) }
@@ -163,37 +163,42 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
                 retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
                 rateLimitReset: http?.value(forHTTPHeaderField: "X-RateLimit-Reset")))
         }
-        // 404: the repository has no published release yet.
+        // 404: nothing published on this channel yet.
         if status == 404 {
             markChecked()
             if manual { showUpToDate(current) }
             return
         }
-        // Unauthenticated API calls are limited per IP address.
         if status == 403 || status == 429 {
             if manual { showFailure(.rateLimited) }
             return
         }
-        guard error == nil, status == 200, let data,
-              let release = try? JSONDecoder().decode(UpdateRelease.self, from: data)
-        else {
-            if status == 200 { markChecked() }   // GitHub answered, with something odd
+        guard error == nil, status == 200, let data else {
             if manual { showFailure(.checkFailed) }
             return
         }
         let skipped = Preferences.skippedVersion.flatMap(AppVersion.init)
-        switch UpdateFeed.decide(release: release, current: current,
-                                 skipped: skipped, honourSkip: !manual) {
+        let decision = UpdateFeed.decide(
+            data: data, current: current, skipped: skipped, honourSkip: !manual,
+            running: ProcessInfo.processInfo.operatingSystemVersion)
+        // Every case below is a verdict: the server answered.
+        markChecked()
+        switch decision {
         case .upToDate:
-            markChecked()
             if manual { showUpToDate(current) }
         case .skipped:
-            markChecked()
-        case .assetsMissing(let version, let page):
-            markChecked()
-            if manual { showFailure(.assetsMissing(version), page: page) }
-        case .available(let candidate):
-            fetchManifest(for: candidate, current: current, manual: manual)
+            break
+        case .malformed:
+            PlumeTrace.log("update: latest.json not understood")
+            if manual { showFailure(.checkFailed) }
+        case .invalid(let version):
+            PlumeTrace.log("update: manifest rejected for \(version)")
+            if manual { showFailure(.invalidPackage) }
+        case .unsupported(let version, let minimum):
+            // Nothing to offer this Mac; an automatic check stays quiet.
+            if manual { showLatestNeedsNewerSystem(current, newer: version, needs: minimum) }
+        case .available(let candidate, let manifest):
+            offer(candidate, manifest: manifest, current: current, manual: manual)
         }
     }
 
@@ -236,45 +241,6 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     }
 
     // MARK: Download
-
-    private func fetchManifest(for candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
-        busy = true
-        session.dataTask(with: candidate.manifestURL) { [weak self] data, response, error in
-            Self.onRunLoop { self?.handleManifest(data: data, response: response, error: error,
-                                                  candidate: candidate, current: current,
-                                                  manual: manual) }
-        }.resume()
-    }
-
-    private func handleManifest(data: Data?, response: URLResponse?, error: Error?,
-                                candidate: UpdateCandidate, current: AppVersion, manual: Bool) {
-        busy = false
-        let manual = claimManualAnswer(manual)
-        let verdict = UpdateFeed.judgeManifest(
-            data: data, status: (response as? HTTPURLResponse)?.statusCode ?? 0,
-            failed: error != nil, candidate: candidate,
-            running: ProcessInfo.processInfo.operatingSystemVersion)
-        switch verdict {
-        case .unreachable:
-            if manual {
-                showFailure(.checkFailed)
-            } else {
-                retryNotBefore = Date().addingTimeInterval(
-                    UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: nil))
-            }
-        case .invalid:
-            markChecked()
-            PlumeTrace.log("update: manifest rejected for \(candidate.version)")
-            if manual { showFailure(.invalidPackage, page: candidate.pageURL) }
-        case .unsupported(let minimum):
-            // Nothing to offer this Mac; an automatic check stays quiet.
-            markChecked()
-            if manual { showLatestNeedsNewerSystem(current, newer: candidate.version, needs: minimum) }
-        case .offer(let manifest):
-            markChecked()
-            offer(candidate, manifest: manifest, current: current, manual: manual)
-        }
-    }
 
     private func startDownload(_ candidate: UpdateCandidate, manifest: UpdateManifest) {
         job = (candidate, manifest)
@@ -412,7 +378,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// never a moment with no Plume.app; then quit and let a detached shell
     /// reopen it. The running binary keeps working after its bundle moves.
     private func swapAndRelaunch(staged: URL, installed: URL, staging: URL,
-                                 version: AppVersion, page: URL) {
+                                 version: AppVersion, page: URL?) {
         do {
             try Self.swap(staged, into: installed)
         } catch {
@@ -525,14 +491,11 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         showFailure(failure, page: page)
     }
 
+    /// `page` is the release's DMG, for installing by hand. A Mac too old for
+    /// this release gets no link: the DMG would not run there either.
     private func showFailure(_ failure: UpdateFailure, page: URL? = nil) {
-        // A Mac too old for this release may still run an earlier one.
-        let target: URL?
-        if case .needsNewerSystem = failure {
-            target = UpdateFeed.allReleasesPageURL(repo: Preferences.updateRepo)
-        } else {
-            target = page ?? UpdateFeed.releasesPageURL(repo: Preferences.updateRepo)
-        }
+        var target = page
+        if case .needsNewerSystem = failure { target = nil }
         let buttons = target == nil ? [] : ["OK", L.t("Mở trang tải về", "Open Download Page")]
         if present(failure.title, failure.detail, buttons: buttons, style: .warning)
             == .alertSecondButtonReturn, let target {
@@ -545,18 +508,9 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
     /// for its macOS): never claim this is the newest for this Mac.
     private func showLatestNeedsNewerSystem(_ current: AppVersion, newer: AppVersion,
                                             needs minimum: String) {
-        let page = UpdateFeed.allReleasesPageURL(repo: Preferences.updateRepo)
-        let buttons = page == nil ? [] : ["OK", L.t("Mở trang Releases", "Open Releases Page")]
-        var detail = L.t("Máy này đang dùng Plume \(current).", "This Mac has Plume \(current).")
-        if page != nil {
-            detail += " " + L.t("Bản nào nằm giữa hai bản này mà chạy được trên máy này đều có trên trang Releases.",
-                                "Any version between the two that runs on this Mac is on the Releases page.")
-        }
-        if present(L.t("Plume \(newer) cần macOS \(minimum) trở lên",
-                       "Plume \(newer) needs macOS \(minimum) or later"),
-                   detail, buttons: buttons) == .alertSecondButtonReturn, let page {
-            NSWorkspace.shared.open(page)
-        }
+        present(L.t("Plume \(newer) cần macOS \(minimum) trở lên",
+                    "Plume \(newer) needs macOS \(minimum) or later"),
+                L.t("Máy này đang dùng Plume \(current).", "This Mac has Plume \(current)."))
     }
 
     private func showUpToDate(_ current: AppVersion) {
@@ -607,7 +561,6 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 enum UpdateFailure: Error, Equatable {
     case checkFailed
     case rateLimited
-    case assetsMissing(AppVersion)
     case downloadFailed
     case invalidPackage
     case needsNewerSystem(String)
@@ -618,8 +571,6 @@ enum UpdateFailure: Error, Equatable {
         switch self {
         case .checkFailed, .rateLimited:
             return L.t("Không kiểm tra được cập nhật", "Couldn't check for updates")
-        case .assetsMissing(let v):
-            return L.t("Plume \(v) chưa sẵn sàng", "Plume \(v) isn't ready yet")
         case .downloadFailed:
             return L.t("Không tải được bản cập nhật", "Couldn't download the update")
         case .invalidPackage:
@@ -636,11 +587,8 @@ enum UpdateFailure: Error, Equatable {
         case .checkFailed, .downloadFailed:
             return L.t("Kiểm tra kết nối mạng rồi thử lại.", "Check your connection and try again.")
         case .rateLimited:
-            return L.t("GitHub đang giới hạn số lần hỏi từ mạng này. Thử lại sau khoảng một giờ.",
-                       "GitHub is limiting requests from this network. Try again in about an hour.")
-        case .assetsMissing:
-            return L.t("Bản phát hành chưa có gói cập nhật. Thử lại sau ít phút.",
-                       "The release has no update package yet. Try again in a few minutes.")
+            return L.t("Máy chủ cập nhật đang giới hạn số lần hỏi từ mạng này. Thử lại sau khoảng một giờ.",
+                       "The update server is limiting requests from this network. Try again in about an hour.")
         case .invalidPackage:
             return L.t("Plume đã huỷ cài đặt và giữ nguyên bản hiện tại.",
                        "Plume cancelled the install and kept the current version.")

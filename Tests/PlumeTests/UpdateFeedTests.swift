@@ -1,116 +1,152 @@
+import CryptoKit
 import XCTest
 @testable import Plume
 
 final class UpdateFeedTests: XCTestCase {
 
-    /// The shape of `GET /repos/{owner}/{repo}/releases/latest`, trimmed to
-    /// what matters plus a few fields the decoder must ignore.
-    private func releaseJSON(tag: String = "v1.2", prerelease: Bool = false, draft: Bool = false,
-                             assets: [String] = ["Plume-1.2.dmg", "Plume-1.2.zip",
-                                                 "Plume-1.2.manifest.json"]) -> Data {
-        let list = assets.enumerated().map { i, name in
-            """
-            {"id": \(i), "name": "\(name)", "size": \(1000 + i),
-             "content_type": "application/zip",
-             "browser_download_url": "https://github.com/tuanlongsav/plume/releases/download/\(tag)/\(name)"}
-            """
-        }.joined(separator: ",")
-        return Data("""
-        {"url": "https://api.github.com/x", "id": 1, "tag_name": "\(tag)",
-         "name": "Plume 1.2", "body": "- Faster\\r\\n- Smaller",
-         "draft": \(draft), "prerelease": \(prerelease),
-         "html_url": "https://github.com/tuanlongsav/plume/releases/tag/\(tag)",
-         "published_at": "2026-11-03T00:00:00Z", "assets": [\(list)]}
-        """.utf8)
-    }
+    private static let sha = String(repeating: "ab", count: 32)
 
-    private func release(_ data: Data) throws -> UpdateRelease {
-        try JSONDecoder().decode(UpdateRelease.self, from: data)
+    /// `https://ota.htl-8.com/plume/stable/latest.json` as `htl-ota publish`
+    /// writes it (htl-ota docs/OTA.md), plus a field the decoder must ignore.
+    private func feedJSON(app: String = "plume", channel: String = "stable",
+                          version: String = "1.2", build: Int = 10200,
+                          url: String = "https://ota.htl-8.com/plume/10200/Plume-1.2.zip",
+                          sha256: String = UpdateFeedTests.sha, size: Int = 1001,
+                          minOs: String? = "13.3", ed25519: String? = "c2ln",
+                          notes: String = "- Faster\\r\\n- Smaller",
+                          attachments: String = """
+                          [{"name": "Plume-1.2.dmg", "url": "https://ota.htl-8.com/plume/10200/Plume-1.2.dmg",
+                            "sha256": "\(UpdateFeedTests.sha)", "size": 2002}]
+                          """) -> Data {
+        var fields = [
+            "\"app\": \"\(app)\"", "\"channel\": \"\(channel)\"",
+            "\"version\": \"\(version)\"", "\"build\": \(build)", "\"url\": \"\(url)\"",
+            "\"sha256\": \"\(sha256)\"", "\"size\": \(size)", "\"notes\": \"\(notes)\"",
+            "\"publishedAt\": \"2026-11-22T06:00:00.000Z\"", "\"attachments\": \(attachments)",
+            "\"extra\": true",
+        ]
+        if let minOs { fields.append("\"minOs\": \"\(minOs)\"") }
+        if let ed25519 { fields.append("\"ed25519\": \"\(ed25519)\"") }
+        return Data(("{" + fields.joined(separator: ", ") + "}").utf8)
     }
 
     private let v11 = AppVersion("1.1")!
+    private let ventura = OperatingSystemVersion(majorVersion: 13, minorVersion: 6, patchVersion: 0)
 
-    func testDecodesTheFieldsItNeeds() throws {
-        let r = try release(releaseJSON())
-        XCTAssertEqual(r.tagName, "v1.2")
-        XCTAssertEqual(r.name, "Plume 1.2")
-        XCTAssertFalse(r.prerelease)
-        XCTAssertEqual(r.assets.count, 3)
-        XCTAssertEqual(r.assets[1].browserDownloadURL.lastPathComponent, "Plume-1.2.zip")
-        XCTAssertEqual(r.assets[1].size, 1001)
+    private func decide(_ data: Data, current: AppVersion? = nil, skipped: AppVersion? = nil,
+                        honourSkip: Bool = true) -> UpdateDecision {
+        UpdateFeed.decide(data: data, current: current ?? v11, skipped: skipped,
+                          honourSkip: honourSkip, running: ventura)
+    }
+
+    func testFeedURL() {
+        XCTAssertEqual(UpdateFeed.feedURL.absoluteString,
+                       "https://ota.htl-8.com/plume/stable/latest.json")
     }
 
     func testOffersANewerRelease() throws {
-        let decision = UpdateFeed.decide(release: try release(releaseJSON()), current: v11,
-                                         skipped: nil, honourSkip: true)
-        guard case .available(let c) = decision else { return XCTFail("\(decision)") }
+        guard case .available(let c, let m) = decide(feedJSON()) else {
+            return XCTFail("\(decide(feedJSON()))")
+        }
         XCTAssertEqual(c.version, AppVersion("1.2"))
         XCTAssertEqual(c.title, "Plume 1.2")
         XCTAssertEqual(c.notes, "- Faster\n- Smaller")
-        XCTAssertEqual(c.zipURL.lastPathComponent, "Plume-1.2.zip")
+        XCTAssertEqual(c.zipURL.absoluteString, "https://ota.htl-8.com/plume/10200/Plume-1.2.zip")
         XCTAssertEqual(c.zipSize, 1001)
-        XCTAssertEqual(c.manifestURL.lastPathComponent, "Plume-1.2.manifest.json")
+        XCTAssertEqual(c.pageURL?.lastPathComponent, "Plume-1.2.dmg")
+        // Mapped onto what UpdateVerifier checks the download against.
+        XCTAssertEqual(m, UpdateManifest(format: 1, version: "1.2", build: 10200,
+                                         minimumSystemVersion: "13.3", asset: "Plume-1.2.zip",
+                                         length: 1001, sha256: Self.sha, ed25519: "c2ln"))
     }
 
-    func testSameOrOlderIsUpToDate() throws {
-        let r = try release(releaseJSON())
+    func testSameOrOlderIsUpToDate() {
         for current in ["1.2", "1.2.0", "1.3", "2.0"] {
-            XCTAssertEqual(UpdateFeed.decide(release: r, current: AppVersion(current)!,
-                                             skipped: nil, honourSkip: true), .upToDate, current)
+            XCTAssertEqual(decide(feedJSON(), current: AppVersion(current)!), .upToDate, current)
         }
     }
 
-    func testIgnoresPrereleasesDraftsAndOddTags() throws {
-        for data in [releaseJSON(prerelease: true), releaseJSON(draft: true),
-                     releaseJSON(tag: "nightly"), releaseJSON(tag: "v1.2-beta")] {
-            XCTAssertEqual(UpdateFeed.decide(release: try release(data), current: v11,
-                                             skipped: nil, honourSkip: true), .upToDate)
-        }
-    }
-
-    func testSkippedVersionSilencesOnlyAutomaticChecks() throws {
-        let r = try release(releaseJSON())
+    func testSkippedVersionSilencesOnlyAutomaticChecks() {
         let skipped = AppVersion("1.2")
-        XCTAssertEqual(UpdateFeed.decide(release: r, current: v11, skipped: skipped, honourSkip: true),
-                       .skipped(AppVersion("1.2")!))
-        guard case .available = UpdateFeed.decide(release: r, current: v11,
-                                                  skipped: skipped, honourSkip: false)
+        XCTAssertEqual(decide(feedJSON(), skipped: skipped), .skipped(AppVersion("1.2")!))
+        guard case .available = decide(feedJSON(), skipped: skipped, honourSkip: false)
         else { return XCTFail("a manual check must ignore the skip") }
         // Skipping 1.1 says nothing about 1.2.
-        guard case .available = UpdateFeed.decide(release: r, current: AppVersion("1.0")!,
-                                                  skipped: v11, honourSkip: true)
+        guard case .available = decide(feedJSON(), current: AppVersion("1.0")!, skipped: v11)
         else { return XCTFail("an older skip must not hide a newer release") }
     }
 
-    func testAssetsAreMatchedByExactName() throws {
-        for assets in [["Plume-1.2.dmg", "Plume-1.2.zip"],
-                       ["Plume-1.2.dmg", "Plume-1.2.manifest.json"],
-                       ["Plume-1.2-beta.zip", "Plume-1.2.manifest.json"],
-                       ["plume-1.2.zip", "Plume-1.2.manifest.json"]] {
-            let decision = UpdateFeed.decide(release: try release(releaseJSON(assets: assets)),
-                                             current: v11, skipped: nil, honourSkip: true)
-            guard case .assetsMissing(let v, _) = decision else { return XCTFail("\(assets)") }
-            XCTAssertEqual(v, AppVersion("1.2"))
+    // Another app's or channel's manifest, or no manifest at all.
+    func testForeignOrBrokenFeedIsMalformed() {
+        XCTAssertEqual(decide(feedJSON(app: "rowa")), .malformed)
+        XCTAssertEqual(decide(feedJSON(channel: "beta")), .malformed)
+        XCTAssertEqual(decide(feedJSON(version: "1.2-beta")), .malformed)
+        XCTAssertEqual(decide(Data("not json".utf8)), .malformed)
+        XCTAssertEqual(decide(Data(count: 70 * 1024)), .malformed)
+    }
+
+    func testManifestThatDoesNotDescribeTheReleaseIsInvalid() {
+        let v12 = AppVersion("1.2")!
+        let bad: [Data] = [
+            feedJSON(build: 10300),
+            feedJSON(url: "http://ota.htl-8.com/plume/10200/Plume-1.2.zip"),
+            feedJSON(url: "https://ota.htl-8.com/plume/10200/Plume-1.3.zip"),
+            feedJSON(url: "https://ota.htl-8.com/plume/10200/plume-1.2.zip"),
+            feedJSON(sha256: "AB" + String(Self.sha.dropFirst(2))),
+            feedJSON(sha256: "ab"),
+            feedJSON(size: 0),
+            feedJSON(minOs: nil),
+            feedJSON(ed25519: nil),
+            feedJSON(ed25519: ""),
+        ]
+        for data in bad {
+            XCTAssertEqual(decide(data), .invalid(v12), String(decoding: data, as: UTF8.self))
         }
-        // Order and extra files do not matter.
-        let shuffled = ["Plume-1.2.manifest.json", "notes.txt", "Plume-1.2.zip"]
-        guard case .available = UpdateFeed.decide(release: try release(releaseJSON(assets: shuffled)),
-                                                  current: v11, skipped: nil, honourSkip: true)
-        else { return XCTFail("shuffled assets") }
+    }
+
+    // A release this Mac cannot run is never offered.
+    func testReleaseNeedingANewerMacIsNotOffered() {
+        let v12 = AppVersion("1.2")!
+        XCTAssertEqual(decide(feedJSON(minOs: "14.0")), .unsupported(v12, minimum: "14.0"))
+        XCTAssertEqual(decide(feedJSON(minOs: "13.7")), .unsupported(v12, minimum: "13.7"))
+    }
+
+    // The DMG link is matched by exact name and https; its absence is no reason
+    // to withhold the update.
+    func testDMGLinkIsOptional() {
+        for attachments in ["[]",
+                            "[{\"name\": \"Plume-1.2.dmg\", \"url\": \"http://x/Plume-1.2.dmg\", \"sha256\": \"a\", \"size\": 1}]",
+                            "[{\"name\": \"Plume-1.3.dmg\", \"url\": \"https://x/Plume-1.3.dmg\", \"sha256\": \"a\", \"size\": 1}]"] {
+            guard case .available(let c, _) = decide(feedJSON(attachments: attachments))
+            else { return XCTFail(attachments) }
+            XCTAssertNil(c.pageURL, attachments)
+        }
+    }
+
+    // What htl-ota publish writes is what the download is verified against:
+    // a signature over the zip by the trusted key, nothing from the server.
+    func testSignedFeedVerifiesTheDownload() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let zip = Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let sha = SHA256.hash(data: zip).map { String(format: "%02x", $0) }.joined()
+        let sig = try key.signature(for: zip).base64EncodedString()
+        let data = feedJSON(sha256: sha, size: zip.count, ed25519: sig)
+        guard case .available(_, let manifest) = decide(data) else { return XCTFail() }
+        XCTAssertNoThrow(try UpdateVerifier.verifyArchive(zip, manifest: manifest,
+                                                          publicKey: key.publicKey))
+        var forged = zip
+        forged[0] ^= 1
+        XCTAssertThrowsError(try UpdateVerifier.verifyArchive(forged, manifest: manifest,
+                                                              publicKey: key.publicKey))
+        XCTAssertThrowsError(try UpdateVerifier.verifyArchive(
+            zip, manifest: manifest, publicKey: Curve25519.Signing.PrivateKey().publicKey))
     }
 
     func testAssetNames() {
         let names = UpdateFeed.assetNames(for: AppVersion("v1.10")!)
         XCTAssertEqual(names.zip, "Plume-1.10.zip")
         XCTAssertEqual(names.manifest, "Plume-1.10.manifest.json")
-    }
-
-    func testRepoOverrideIsValidated() {
-        XCTAssertEqual(UpdateFeed.latestReleaseURL(repo: "tuanlongsav/plume")?.absoluteString,
-                       "https://api.github.com/repos/tuanlongsav/plume/releases/latest")
-        for bad in ["", "plume", "a/b/c", "../x", "a/..", "a b/c", "a/b?x=1", "évil/x"] {
-            XCTAssertNil(UpdateFeed.latestReleaseURL(repo: bad), bad)
-        }
+        XCTAssertEqual(names.dmg, "Plume-1.10.dmg")
     }
 
     func testTrimNotes() {
@@ -147,7 +183,7 @@ final class UpdateFeedTests: XCTestCase {
         XCTAssertTrue(UpdateSchedule.isDue(last: now.addingTimeInterval(-24 * 3600), now: now))
     }
 
-    // A failed check retries within the day, on GitHub's terms when it gives any.
+    // A failed check retries within the day, on the server's terms when it gives any.
     func testRetryDelayAfterAFailedCheck() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: nil, now: now), 3600)
@@ -160,65 +196,5 @@ final class UpdateFeedTests: XCTestCase {
         XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: nil, rateLimitReset: "1700000000", now: now), 60)
         XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "999999", rateLimitReset: nil, now: now), 6 * 3600)
         XCTAssertEqual(UpdateSchedule.retryDelay(retryAfter: "soon", rateLimitReset: nil, now: now), 3600)
-    }
-
-    // Only https downloads are followed.
-    func testPlainHTTPAssetsCountAsMissing() throws {
-        var json = String(decoding: releaseJSON(), as: UTF8.self)
-        json = json.replacingOccurrences(of: "\"browser_download_url\": \"https://",
-                                         with: "\"browser_download_url\": \"http://")
-        let decision = UpdateFeed.decide(release: try release(Data(json.utf8)), current: v11,
-                                         skipped: nil, honourSkip: true)
-        guard case .assetsMissing(let v, _) = decision else { return XCTFail("\(decision)") }
-        XCTAssertEqual(v, AppVersion("1.2"))
-    }
-
-    // MARK: Manifest before the offer
-
-    private let candidate12 = UpdateCandidate(
-        version: AppVersion("1.2")!, title: "Plume 1.2", notes: "",
-        pageURL: URL(string: "https://github.com/tuanlongsav/plume/releases/tag/v1.2")!,
-        zipURL: URL(string: "https://github.com/tuanlongsav/plume/releases/download/v1.2/Plume-1.2.zip")!,
-        zipSize: 1001,
-        manifestURL: URL(string: "https://github.com/tuanlongsav/plume/releases/download/v1.2/Plume-1.2.manifest.json")!)
-
-    private func manifestJSON(version: String = "1.2", length: Int = 1001, minimum: String = "13.3") -> Data {
-        Data("""
-        {"format": 1, "version": "\(version)", "build": 10200, "minimumSystemVersion": "\(minimum)",
-         "asset": "Plume-\(version).zip", "length": \(length), "sha256": "ab", "ed25519": "cd"}
-        """.utf8)
-    }
-
-    private let ventura = OperatingSystemVersion(majorVersion: 13, minorVersion: 6, patchVersion: 0)
-
-    private func judge(_ data: Data?, status: Int = 200, failed: Bool = false) -> ManifestVerdict {
-        UpdateFeed.judgeManifest(data: data, status: status, failed: failed,
-                                 candidate: candidate12, running: ventura)
-    }
-
-    func testManifestThatFitsIsOffered() throws {
-        let m = try JSONDecoder().decode(UpdateManifest.self, from: manifestJSON())
-        XCTAssertEqual(judge(manifestJSON()), .offer(m))
-    }
-
-    // A release this Mac cannot run is never offered.
-    func testManifestNeedingANewerMacIsNotOffered() {
-        XCTAssertEqual(judge(manifestJSON(minimum: "14.0")), .unsupported(minimum: "14.0"))
-        XCTAssertEqual(judge(manifestJSON(minimum: "13.7")), .unsupported(minimum: "13.7"))
-    }
-
-    func testManifestThatDoesNotDescribeTheReleaseIsInvalid() {
-        XCTAssertEqual(judge(manifestJSON(version: "1.3")), .invalid)
-        XCTAssertEqual(judge(manifestJSON(length: 5)), .invalid)
-        XCTAssertEqual(judge(Data("not json".utf8)), .invalid)
-        XCTAssertEqual(judge(Data(count: 70 * 1024)), .invalid)
-    }
-
-    // No answer is worth retrying; it says nothing about the release.
-    func testNoManifestIsUnreachable() {
-        XCTAssertEqual(judge(nil), .unreachable)
-        XCTAssertEqual(judge(manifestJSON(), status: 404), .unreachable)
-        XCTAssertEqual(judge(manifestJSON(), status: 503), .unreachable)
-        XCTAssertEqual(judge(manifestJSON(), failed: true), .unreachable)
     }
 }

@@ -1,38 +1,35 @@
 import Foundation
 
-/// The fields of a GitHub release that the updater reads
-/// (`GET /repos/{owner}/{repo}/releases/latest`).
-struct UpdateRelease: Decodable, Equatable {
-    struct Asset: Decodable, Equatable {
+/// `https://ota.htl-8.com/plume/stable/latest.json`, written by
+/// `htl-ota publish` (htl-ota docs/OTA.md). It is fetched over https but not
+/// trusted for that: `ed25519` signs every byte of the zip with the key in
+/// `UpdateKeys`, and the unpacked app must carry Plume's Developer ID.
+struct OTAManifest: Decodable, Equatable {
+    struct Attachment: Decodable, Equatable {
         let name: String
-        let browserDownloadURL: URL
+        let url: URL
+        let sha256: String
         let size: Int
-
-        enum CodingKeys: String, CodingKey {
-            case name, size
-            case browserDownloadURL = "browser_download_url"
-        }
     }
 
-    let tagName: String
-    let name: String?
-    let body: String?
-    let prerelease: Bool
-    let draft: Bool
-    let htmlURL: URL
-    let assets: [Asset]
-
-    enum CodingKeys: String, CodingKey {
-        case name, body, prerelease, draft, assets
-        case tagName = "tag_name"
-        case htmlURL = "html_url"
-    }
+    let app: String
+    let channel: String
+    let version: String
+    let build: Int
+    let url: URL
+    let sha256: String
+    let size: Int
+    let notes: String?
+    let minOs: String?
+    let ed25519: String?
+    let attachments: [Attachment]?
 }
 
-/// `Plume-X.Y.manifest.json`, written by Scripts/release.sh. Only `ed25519`
-/// is a trust anchor: it signs every byte of the zip. `length` and `sha256`
-/// tell a broken download apart from a forged one, and `version` is checked
-/// against both the release tag and the unpacked bundle.
+/// What the updater checks a download against. Built from `OTAManifest`;
+/// still decodable because `Plume-X.Y.manifest.json` (the GitHub-era manifest
+/// Scripts/release.sh keeps writing for the bridge release) has this shape.
+/// Only `ed25519` is a trust anchor; `length` and `sha256` tell a broken
+/// download apart from a forged one.
 struct UpdateManifest: Decodable, Equatable {
     let format: Int
     let version: String
@@ -48,113 +45,82 @@ struct UpdateCandidate: Equatable {
     let version: AppVersion
     let title: String
     let notes: String
-    let pageURL: URL
+    /// The release's `Plume-X.Y.dmg`, for installing by hand when the update
+    /// fails; nil when the release has none.
+    let pageURL: URL?
     let zipURL: URL
     let zipSize: Int
-    let manifestURL: URL
 }
 
 enum UpdateDecision: Equatable {
     case upToDate
     case skipped(AppVersion)
-    /// Newer, but its zip or manifest is not (yet) attached — e.g. while
-    /// `gh release create` is still uploading.
-    case assetsMissing(AppVersion, page: URL)
-    case available(UpdateCandidate)
-}
-
-enum ManifestVerdict: Equatable {
-    case offer(UpdateManifest)
-    /// The release needs a newer macOS than this Mac runs.
-    case unsupported(minimum: String)
-    /// It arrived but does not describe the release it is attached to.
-    case invalid
-    /// No usable answer; worth another try later.
-    case unreachable
+    /// Newer, but this Mac's macOS is below the release's `minOs`: a release
+    /// this Mac cannot run is never offered.
+    case unsupported(AppVersion, minimum: String)
+    /// Newer, but the manifest does not describe a Plume release we could
+    /// verify (wrong asset name, build, missing signature or floor...).
+    case invalid(AppVersion)
+    /// Not a Plume `latest.json` at all.
+    case malformed
+    case available(UpdateCandidate, UpdateManifest)
 }
 
 enum UpdateFeed {
+    static let app = "plume"
+    static let channel = "stable"
+    static let feedURL = URL(string: "https://ota.htl-8.com/\(app)/\(channel)/latest.json")!
+    /// Still read by `Preferences.updateRepo`; the updater no longer asks GitHub.
     static let defaultRepo = "tuanlongsav/plume"
 
-    /// `owner/name` only. The repo can be overridden in defaults for a dry
-    /// run, so it is never spliced into a URL unchecked.
-    static func latestReleaseURL(repo: String) -> URL? {
-        guard isValidRepo(repo) else { return nil }
-        return URL(string: "https://api.github.com/repos/\(repo)/releases/latest")
+    static func assetNames(for version: AppVersion) -> (zip: String, manifest: String, dmg: String) {
+        ("Plume-\(version).zip", "Plume-\(version).manifest.json", "Plume-\(version).dmg")
     }
 
-    static func releasesPageURL(repo: String) -> URL? {
-        guard isValidRepo(repo) else { return nil }
-        return URL(string: "https://github.com/\(repo)/releases/latest")
-    }
-
-    /// Every release, for a Mac whose macOS the latest one no longer supports:
-    /// an older release there may still run.
-    static func allReleasesPageURL(repo: String) -> URL? {
-        guard isValidRepo(repo) else { return nil }
-        return URL(string: "https://github.com/\(repo)/releases")
-    }
-
-    /// The candidate's manifest, read before the user is asked, so a release
-    /// this Mac cannot run is never offered (it used to be, and was refused
-    /// only after Update, then offered again the next day).
-    static func judgeManifest(data: Data?, status: Int, failed: Bool,
-                              candidate: UpdateCandidate,
-                              running: OperatingSystemVersion) -> ManifestVerdict {
-        guard !failed, status == 200, let data else { return .unreachable }
+    /// What to do with a 200 answer from `feedURL`. `honourSkip` is false for
+    /// a check the user asked for: "Skip This Version" only silences
+    /// automatic ones.
+    static func decide(data: Data, current: AppVersion, skipped: AppVersion?,
+                       honourSkip: Bool, running: OperatingSystemVersion) -> UpdateDecision {
         guard data.count <= 64 * 1024,
-              let manifest = try? JSONDecoder().decode(UpdateManifest.self, from: data),
-              (try? UpdateVerifier.checkManifest(
-                  manifest, expectedVersion: candidate.version,
-                  assetName: assetNames(for: candidate.version).zip,
-                  assetSize: candidate.zipSize)) != nil
-        else { return .invalid }
-        guard SystemVersion.satisfies(minimum: manifest.minimumSystemVersion, running: running) else {
-            return .unsupported(minimum: manifest.minimumSystemVersion)
-        }
-        return .offer(manifest)
-    }
-
-    private static func isValidRepo(_ repo: String) -> Bool {
-        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2 else { return false }
-        return parts.allSatisfy { part in
-            !part.isEmpty && part != "." && part != ".." && part.allSatisfy {
-                $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".")
-            }
-        }
-    }
-
-    static func assetNames(for version: AppVersion) -> (zip: String, manifest: String) {
-        ("Plume-\(version).zip", "Plume-\(version).manifest.json")
-    }
-
-    /// What to do with the latest release. `honourSkip` is false for a check
-    /// the user asked for: "Skip This Version" only silences automatic ones.
-    static func decide(release: UpdateRelease, current: AppVersion,
-                       skipped: AppVersion?, honourSkip: Bool) -> UpdateDecision {
-        guard !release.draft, !release.prerelease,
-              let version = AppVersion(release.tagName), version > current
-        else { return .upToDate }
+              let feed = try? JSONDecoder().decode(OTAManifest.self, from: data),
+              feed.app == app, feed.channel == channel,
+              let version = AppVersion(feed.version)
+        else { return .malformed }
+        guard version > current else { return .upToDate }
         if honourSkip, let skipped, skipped == version { return .skipped(version) }
 
-        // By exact name, never by position: a release may carry other files.
         let names = assetNames(for: version)
-        guard let zip = release.assets.first(where: { $0.name == names.zip }),
-              let manifest = release.assets.first(where: { $0.name == names.manifest }),
-              zip.browserDownloadURL.scheme == "https",
-              manifest.browserDownloadURL.scheme == "https"
-        else { return .assetsMissing(version, page: release.htmlURL) }
-
-        let name = release.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // `build` is what other clients compare; for Plume it is derived from
+        // the version (build_app.sh), so a mismatch means a broken publish.
+        guard feed.build == version.build,
+              feed.url.scheme == "https", feed.url.lastPathComponent == names.zip,
+              feed.sha256.count == 64,
+              feed.sha256.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
+              let signature = feed.ed25519, !signature.isEmpty,
+              let minimum = feed.minOs, !minimum.isEmpty
+        else { return .invalid(version) }
+        let manifest = UpdateManifest(
+            format: 1, version: feed.version, build: feed.build,
+            minimumSystemVersion: minimum, asset: names.zip, length: feed.size,
+            sha256: feed.sha256, ed25519: signature)
+        guard (try? UpdateVerifier.checkManifest(manifest, expectedVersion: version,
+                                                 assetName: names.zip,
+                                                 assetSize: feed.size)) != nil,
+              feed.size > 0
+        else { return .invalid(version) }
+        guard SystemVersion.satisfies(minimum: minimum, running: running) else {
+            return .unsupported(version, minimum: minimum)
+        }
+        // By exact name, never by position: a release may carry other files.
+        let dmg = feed.attachments?.first { $0.name == names.dmg && $0.url.scheme == "https" }
         return .available(UpdateCandidate(
             version: version,
-            title: name.isEmpty ? "Plume \(version)" : name,
-            notes: trimNotes(release.body),
-            pageURL: release.htmlURL,
-            zipURL: zip.browserDownloadURL,
-            zipSize: zip.size,
-            manifestURL: manifest.browserDownloadURL))
+            title: "Plume \(version)",
+            notes: trimNotes(feed.notes),
+            pageURL: dmg?.url,
+            zipURL: feed.url,
+            zipSize: feed.size), manifest)
     }
 
     /// Release notes for an alert: no carriage returns, at most `limit`
@@ -183,8 +149,8 @@ enum UpdateSchedule {
     /// After a check that never reached a verdict (offline, 5xx, rate
     /// limited), how long to wait before the next automatic attempt. Only a
     /// verdict starts the daily interval; this keeps a failure from costing a
-    /// whole day without retrying on every app activation either. GitHub's
-    /// rate-limit headers are honoured, clamped to between a minute and six
+    /// whole day without retrying on every app activation either. Rate-limit
+    /// headers (Retry-After, X-RateLimit-Reset) are honoured, clamped to between a minute and six
     /// hours so a bad header can neither spin nor silence the updater.
     static func retryDelay(retryAfter: String?, rateLimitReset: String?,
                            now: Date = Date()) -> TimeInterval {

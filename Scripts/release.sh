@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Publish Plume X.Y to GitHub Releases, where the in-app updater finds it.
+# Publish Plume X.Y to ota.htl-8.com, where the in-app updater finds it
+# (https://ota.htl-8.com/plume/stable/latest.json, htl-ota docs/OTA.md).
 #
 #   bash Scripts/release.sh X.Y [--skip-notarize] [--no-publish] [--from-build]
 #                               [--rotating-key] [--raise-floor]
 #
-#   1. preflight     clean tree on an up-to-date main, new version, gh logged
-#                    in, signing key present and matching UpdateKeys.swift,
-#                    CHANGELOG.md has a "## X.Y" section
+#   1. preflight     clean tree on an up-to-date main, new version, the
+#                    htl-ota CLI present, signing key present and matching
+#                    UpdateKeys.swift, CHANGELOG.md has a "## X.Y" section
 #   2. build         Scripts/release_sign.sh X.Y → Plume-X.Y.dmg + .zip
-#   3. manifest      Ed25519-sign the zip → Plume-X.Y.manifest.json
-#   4. publish       tag vX.Y, push, gh release create with the three assets
-#   5. verify        releases/latest is vX.Y, every asset URL answers 200
+#   3. manifest      Ed25519-sign the zip → Plume-X.Y.manifest.json (kept in
+#                    build/ for a GitHub bridge release; ota does not use it)
+#   4. publish       tag vX.Y, push, htl-ota publish plume (zip signed with the
+#                    same key, DMG attached)
+#   5. verify        latest.json is X.Y, describes the zip, its signature
+#                    verifies with the trusted key, both files answer 200
 #
 # --no-publish stops after step 3 (dry run; artifacts stay in build/). From a
 #   clean tree that matches origin/main it also records the commit in
@@ -28,17 +32,23 @@
 # installed copy trusts); see docs/RELEASE.md before using it.
 #
 # Never rebuild a version after publishing it: new bytes mean a new
-# signature, and the manifest already on GitHub would no longer match.
+# signature, and the files on ota (immutable per build) would no longer match.
+#
+# PLUME_OTA_CHANNEL (default stable) publishes to another channel, which the
+# app never reads: a test run, so origin is not tagged. HTL_OTA_DIR is the
+# htl-ota checkout (default ../htl-ota next to this repo); its `npx wrangler`
+# must be logged in to the account that owns the bucket.
 set -euo pipefail
 
 # In iCloud Drive, so every Mac that releases signs with the same key.
 KEY="${PLUME_UPDATE_KEY:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/Plume/plume_update_key.pem}"
-DEFAULT_REPO="tuanlongsav/plume"
-REPO="${PLUME_RELEASE_REPO:-$DEFAULT_REPO}"
-# A dry run against a test repository must not tag the real one: the tag
-# would block the real release of that version.
+CHANNEL="${PLUME_OTA_CHANNEL:-stable}"
+[[ "$CHANNEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "FAIL: bad PLUME_OTA_CHANNEL: $CHANNEL" >&2; exit 1; }
+OTA="https://ota.htl-8.com"
+# A dry run on a test channel must not tag the real repo: the tag would
+# block the real release of that version.
 TAG_ORIGIN=1
-[[ "$REPO" == "$DEFAULT_REPO" ]] || TAG_ORIGIN=0
+[[ "$CHANNEL" == "stable" ]] || TAG_ORIGIN=0
 
 VERSION=""
 SKIP_NOTARIZE=0
@@ -53,7 +63,7 @@ while [[ $# -gt 0 ]]; do
         --rotating-key)  ROTATING=1; shift ;;
         --from-build)    FROM_BUILD=1; shift ;;
         --raise-floor)   RAISE_FLOOR=1; shift ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
         -*) echo "Unknown argument: $1" >&2; exit 1 ;;
         *)
             [[ -z "$VERSION" ]] || { echo "Unexpected argument: $1" >&2; exit 1; }
@@ -76,6 +86,7 @@ TAG="v$VERSION"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+HTL_OTA="${HTL_OTA_DIR:-$ROOT/../htl-ota}"
 SIGN_TOOL=(swift "$ROOT/Scripts/update_sign.swift")
 APP="$ROOT/build/Plume.app"
 DMG="$ROOT/build/Plume-$VERSION.dmg"
@@ -153,10 +164,8 @@ if [[ "$PUBLISH" -eq 1 ]]; then
         [[ -z "$(git tag -l "$TAG")" ]] || die "tag $TAG already exists locally."
         [[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ]] || die "tag $TAG already exists on origin."
     fi
-    gh auth status >/dev/null 2>&1 || die "gh is not logged in (gh auth login)."
-    if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-        die "release $TAG already exists on $REPO."
-    fi
+    [[ -f "$HTL_OTA/bin/htl-ota.mjs" ]] || die "htl-ota CLI not found in $HTL_OTA (set HTL_OTA_DIR)."
+    command -v node >/dev/null || die "node is not installed (the htl-ota CLI needs it)."
 fi
 
 if [[ "$FROM_BUILD" -eq 1 ]]; then
@@ -180,6 +189,7 @@ if [[ "$FROM_BUILD" -eq 1 ]]; then
     APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$UNPACK/Plume.app/Contents/Info.plist")"
     [[ "$APP_VERSION" == "$VERSION" ]] || die "the zipped app is version $APP_VERSION."
     MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$UNPACK/Plume.app/Contents/Info.plist")"
+    BUILD="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$UNPACK/Plume.app/Contents/Info.plist")"
     field() { plutil -extract "$1" raw -o - "$MANIFEST"; }
     LENGTH="$(stat -f%z "$ZIP")"
     [[ "$(field version)" == "$VERSION" ]] || die "manifest version is $(field version)."
@@ -232,17 +242,20 @@ JSON
 fi
 
 step "Minimum macOS"
-# Compared with what the last release's manifest says, which is what
-# installed copies were told; padded to three numbers for a numeric sort.
+# Compared with what installed copies were last told: ota's latest.json, or
+# for the first ota release the last GitHub release's manifest. Padded to
+# three numbers for a numeric sort.
 padded() { awk -F. '{ printf "%d.%d.%d\n", $1, $2, $3 }' <<<"$1"; }
 PREV_MIN=""
 if [[ -n "$LATEST" ]]; then
-    PREV_MIN="$(curl -fsSL "https://github.com/$REPO/releases/download/v$LATEST/Plume-$LATEST.manifest.json" 2>/dev/null \
+    PREV_MIN="$(curl -fsSL "$OTA/plume/stable/latest.json" 2>/dev/null \
+        | plutil -extract minOs raw -o - - 2>/dev/null || true)"
+    [[ -n "$PREV_MIN" ]] || PREV_MIN="$(curl -fsSL "https://github.com/tuanlongsav/plume/releases/download/v$LATEST/Plume-$LATEST.manifest.json" 2>/dev/null \
         | plutil -extract minimumSystemVersion raw -o - - 2>/dev/null || true)"
 fi
 if [[ -z "$PREV_MIN" ]]; then
     if [[ -n "$LATEST" && "$PUBLISH" -eq 1 && "$TAG_ORIGIN" -eq 1 ]]; then
-        die "cannot read the minimum macOS from v$LATEST's manifest."
+        die "cannot read the minimum macOS of v$LATEST (ota latest.json or its GitHub manifest)."
     fi
     echo "$VERSION needs macOS $MIN_OS (no previous release to compare with)."
 else
@@ -274,40 +287,46 @@ if [[ "$PUBLISH" -eq 0 ]]; then
     exit 0
 fi
 
+PUBLISH_CMD=(node "$HTL_OTA/bin/htl-ota.mjs" publish plume "$ZIP"
+    --version "$VERSION" --build "$BUILD" --channel "$CHANNEL" --notes "$NOTES"
+    --min-os "$MIN_OS" --sign-key "$KEY" --attach "$DMG")
+
 step "Tag + publish"
 if [[ "$TAG_ORIGIN" -eq 1 ]]; then
     git tag -a "$TAG" -m "Plume $VERSION"
     git push origin "$TAG"
 else
-    echo "Test repository $REPO: not tagging origin; gh creates $TAG there."
+    echo "Test channel $CHANNEL: not tagging origin."
 fi
-if ! gh release create "$TAG" -R "$REPO" --title "Plume $VERSION" --notes-file "$NOTES" \
-        "$DMG" "$ZIP" "$MANIFEST"; then
-    # The tag is already public. Retry the upload with the SAME files rather
-    # than rebuilding, which would change the signed bytes.
-    die "gh release create failed. Retry with the same files:
-  gh release create $TAG -R $REPO --title \"Plume $VERSION\" --notes-file $NOTES $DMG $ZIP $MANIFEST"
+# htl-ota writes latest.json last, so a failure leaves the old release live.
+if ! "${PUBLISH_CMD[@]}"; then
+    # The tag is already public. Retry with the SAME files rather than
+    # rebuilding, which would change the signed bytes.
+    die "htl-ota publish failed. Retry with the same files:
+  ${PUBLISH_CMD[*]}"
 fi
 
 step "Verify"
-API="https://api.github.com/repos/$REPO/releases/latest"
-LATEST_JSON=""
-for _ in 1 2 3 4 5 6; do
-    LATEST_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API" || true)"
-    grep -q "\"tag_name\": *\"$TAG\"" <<<"$LATEST_JSON" && break
-    sleep 5
-done
-grep -q "\"tag_name\": *\"$TAG\"" <<<"$LATEST_JSON" \
-    || die "$API does not report $TAG — is the release a draft or a prerelease?"
-for name in "Plume-$VERSION.dmg" "Plume-$VERSION.zip" "Plume-$VERSION.manifest.json"; do
-    URL="https://github.com/$REPO/releases/download/$TAG/$name"
-    CODE="$(curl -sIL -o /dev/null -w '%{http_code}' "$URL")"
+LATEST_JSON="$(curl -fsSL -H 'Cache-Control: no-cache' "$OTA/plume/$CHANNEL/latest.json")" \
+    || die "$OTA/plume/$CHANNEL/latest.json is not reachable."
+ota() { plutil -extract "$1" raw -o - - <<<"$LATEST_JSON"; }
+[[ "$(ota version)" == "$VERSION" ]] || die "latest.json reports version $(ota version)."
+[[ "$(ota build)" == "$BUILD" ]] || die "latest.json reports build $(ota build), the app is $BUILD."
+[[ "$(ota url)" == "$OTA/plume/$BUILD/Plume-$VERSION.zip" ]] || die "latest.json points at $(ota url)."
+[[ "$(ota size)" == "$LENGTH" ]] || die "latest.json size $(ota size), zip is $LENGTH bytes."
+[[ "$(ota sha256)" == "$(shasum -a 256 "$ZIP" | cut -d' ' -f1)" ]] || die "latest.json sha256 does not match the zip."
+[[ "$(ota minOs)" == "$MIN_OS" ]] || die "latest.json minOs $(ota minOs), the app needs $MIN_OS."
+"${SIGN_TOOL[@]}" verify "$PUB" "$ZIP" "$(ota ed25519)" >/dev/null \
+    || die "latest.json's signature does not verify with the trusted key."
+for name in "Plume-$VERSION.zip" "Plume-$VERSION.dmg"; do
+    URL="$OTA/plume/$BUILD/$name"
+    CODE="$(curl -sI -o /dev/null -w '%{http_code}' "$URL")"
     [[ "$CODE" == "200" ]] || die "$URL answered $CODE."
     echo "200  $URL"
 done
-UPLOADED="$(gh release view "$TAG" -R "$REPO" --json assets \
-    -q ".assets[] | select(.name == \"Plume-$VERSION.zip\") | .size")"
-[[ "$UPLOADED" == "$LENGTH" ]] || die "uploaded zip is $UPLOADED bytes, manifest says $LENGTH."
 
-step "Released $TAG"
-echo "https://github.com/$REPO/releases/tag/$TAG"
+step "Released $VERSION on $CHANNEL"
+echo "$OTA/plume/$CHANNEL/latest.json"
+# Copies installed before the move to ota still ask GitHub; one last GitHub
+# release (same files) carries them over. Only when the maintainer says so.
+echo "GitHub bridge (if still needed): gh release create $TAG -R tuanlongsav/plume --title \"Plume $VERSION\" --notes-file $NOTES $DMG $ZIP $MANIFEST"
