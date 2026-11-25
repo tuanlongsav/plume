@@ -120,11 +120,16 @@ fi
 # matters is the one in the LATEST RELEASE, which is what installs run. HEAD
 # may embed a new key only in a rotation release (docs/RELEASE.md).
 embedded_key() { sed -n 's/.*publicKeyBase64 = "\([^"]*\)".*/\1/p'; }
-HEAD_KEY="$(embedded_key < Sources/Plume/UpdateKeys.swift)"
+UPDATE_KEYS_PATH="Sources/PlumeUpdater/UpdateKeys.swift"
+HEAD_KEY="$(embedded_key < "$UPDATE_KEYS_PATH")"
 [[ -n "$HEAD_KEY" ]] || die "UpdateKeys.swift embeds no key: this build could never update itself."
 TRUSTED=""
 if [[ -n "$LATEST" ]]; then
-    TRUSTED="$(git show "v$LATEST:Sources/Plume/UpdateKeys.swift" 2>/dev/null | embedded_key || true)"
+    TRUSTED="$(
+        (git show "v$LATEST:$UPDATE_KEYS_PATH" 2>/dev/null \
+         || git show "v$LATEST:Sources/Plume/UpdateKeys.swift" 2>/dev/null) \
+        | embedded_key || true
+    )"
 fi
 [[ -n "$TRUSTED" ]] || TRUSTED="$HEAD_KEY"   # first release with a key
 [[ "$PUB" == "$TRUSTED" ]] \

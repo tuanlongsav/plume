@@ -50,7 +50,7 @@ older Plume that cannot update itself installs the new DMG by hand once.
 Plume deliberately injects almost no CSS into Messenger. Decorative layers we
 tried (custom scrollbars, per-bubble shadows, an accent tint) measurably slowed
 the page down — see the performance note in
-[`InjectedScript.swift`](Sources/Plume/InjectedScript.swift) before adding any.
+[`InjectedScript+Styles.swift`](Sources/PlumeWeb/InjectedScript/InjectedScript+Styles.swift) before adding any.
 
 The conversation-navigation logic is adapted from
 [Caprine](https://github.com/sindresorhus/caprine) — MIT © Sindre Sorhus; see

@@ -1,6 +1,6 @@
 import JavaScriptCore
 import XCTest
-@testable import Plume
+@testable import PlumeWeb
 
 final class TheaterDetectTests: XCTestCase {
 

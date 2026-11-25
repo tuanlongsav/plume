@@ -1,5 +1,5 @@
 import XCTest
-@testable import Plume
+@testable import PlumeBubble
 
 /// Both the head's own drag and the controller's cross-display drag release
 /// through `Chain.flickVelocity`, so one regression covers both.

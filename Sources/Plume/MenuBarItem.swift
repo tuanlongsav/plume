@@ -1,4 +1,6 @@
 import AppKit
+import PlumeCore
+import PlumeUI
 
 /// Plume's icon in the menu bar, with the unread count beside it.
 ///
@@ -36,7 +38,7 @@ final class MenuBarItem: NSObject {
     }
 
     @objc private func unreadChanged(_ note: Notification) {
-        setUnread(note.userInfo?["count"] as? Int ?? 0)
+        setUnread(PlumeUnreadNotification.count(from: note))
     }
 
     /// The notification fires on every title change; rewriting an unchanged
@@ -59,7 +61,7 @@ final class MenuBarItem: NSObject {
         let menu = makeMenu()
         // In bubble mode the chat heads float at .screenSaver level and would
         // cover a menu opened near them; lift it like the chip menus.
-        if ChatBubbleController.isOpen { menu.delegate = ChipMenuLift.shared }
+        if PlumeOverlay.isActive { menu.delegate = ChipMenuLift.shared }
         // Just below the icon, whichever way the button's coordinates run.
         let below = sender.isFlipped ? sender.bounds.maxY + 4 : sender.bounds.minY - 4
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: below), in: sender)

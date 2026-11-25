@@ -1,6 +1,7 @@
 import JavaScriptCore
 import XCTest
-@testable import Plume
+@testable import PlumeCore
+@testable import PlumeWeb
 
 final class ThreadDeleteTests: XCTestCase {
 

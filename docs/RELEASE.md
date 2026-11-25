@@ -56,7 +56,7 @@ Data Protection** cho iCloud để file được mã hoá đầu-cuối, và đ�
 mục `Plume` trong iCloud Drive với ai.
 
 `keygen` in public key (base64, 32 byte), giá trị nằm ở
-`Sources/Plume/UpdateKeys.swift`:
+`Sources/PlumeUpdater/UpdateKeys.swift`:
 
 ```swift
 static let publicKeyBase64 = "<giá trị keygen in ra>"

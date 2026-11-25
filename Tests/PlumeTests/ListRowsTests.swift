@@ -1,6 +1,6 @@
 import JavaScriptCore
 import XCTest
-@testable import Plume
+@testable import PlumeWeb
 
 /// `plumeListRows` decides what every chat-list helper clicks, so a row from
 /// Facebook's top-bar popover must never count. Run in a bare JSContext with

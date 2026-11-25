@@ -1,5 +1,5 @@
 import XCTest
-@testable import Plume
+@testable import PlumeUpdater
 
 final class AppVersionTests: XCTestCase {
 

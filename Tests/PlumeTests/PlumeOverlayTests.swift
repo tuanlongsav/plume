@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import Plume
+@testable import PlumeUI
 
 final class PlumeOverlayTests: XCTestCase {
 

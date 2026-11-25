@@ -1,6 +1,6 @@
 import JavaScriptCore
 import XCTest
-@testable import Plume
+@testable import PlumeWeb
 
 /// Native code keys a tagged notification's banner on its tag
 /// (`plume-tag-<tag>`), so a newer notification for the same conversation

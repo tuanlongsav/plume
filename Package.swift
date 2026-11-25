@@ -1,6 +1,10 @@
 // swift-tools-version:6.0
 import PackageDescription
 
+let swift5: [SwiftSetting] = [
+    .swiftLanguageMode(.v5),
+]
+
 let package = Package(
     name: "Plume",
     platforms: [
@@ -11,20 +15,46 @@ let package = Package(
         .macOS("13.3")
     ],
     targets: [
+        .target(
+            name: "PlumeCore",
+            path: "Sources/PlumeCore",
+            swiftSettings: swift5
+        ),
+        .target(
+            name: "PlumeUI",
+            dependencies: ["PlumeCore"],
+            path: "Sources/PlumeUI",
+            swiftSettings: swift5
+        ),
+        .target(
+            name: "PlumeUpdater",
+            dependencies: ["PlumeCore", "PlumeUI"],
+            path: "Sources/PlumeUpdater",
+            swiftSettings: swift5
+        ),
+        .target(
+            name: "PlumeWeb",
+            dependencies: ["PlumeCore", "PlumeUI"],
+            path: "Sources/PlumeWeb",
+            swiftSettings: swift5
+        ),
+        .target(
+            name: "PlumeBubble",
+            dependencies: ["PlumeCore", "PlumeUI"],
+            path: "Sources/PlumeBubble",
+            swiftSettings: swift5
+        ),
         .executableTarget(
             name: "Plume",
+            dependencies: ["PlumeCore", "PlumeUI", "PlumeUpdater", "PlumeWeb", "PlumeBubble"],
             path: "Sources/Plume",
-            swiftSettings: [
-                .swiftLanguageMode(.v5)
-            ]
+            swiftSettings: swift5
         ),
         .testTarget(
             name: "PlumeTests",
-            dependencies: ["Plume"],
+            dependencies: ["PlumeCore", "PlumeUI", "PlumeUpdater", "PlumeWeb", "PlumeBubble", "Plume"],
             path: "Tests/PlumeTests",
-            swiftSettings: [
-                .swiftLanguageMode(.v5)
-            ]
+            swiftSettings: swift5
         ),
     ]
 )

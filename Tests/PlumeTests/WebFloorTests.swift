@@ -1,5 +1,5 @@
 import XCTest
-@testable import Plume
+@testable import PlumeWeb
 
 /// The scripts Plume injects must run on the oldest WebKit it supports: the
 /// system WebKit of macOS 13.3, Safari 16.4. The unit tests that execute them

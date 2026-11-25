@@ -60,28 +60,20 @@ the page. Scripts must stay compatible with the bash 3.2 that ships with macOS.
 
 ## Layout
 
-| File | What lives there |
+Static SwiftPM library targets form a strict one-way DAG (`PlumeCore` →
+`PlumeUI` → `{PlumeUpdater, PlumeWeb, PlumeBubble}` independent of each other
+→ `Plume` executable).
+
+| Module / Path | What lives there |
 |---|---|
-| `Sources/Plume/main.swift` | `NSApplication` boot |
-| `AppDelegate.swift` | Main window, menus, notification routing, bubble-mode switching |
-| `WebViewController.swift` | `WKWebView` config, navigation, downloads, badge, script-message bridge |
-| `InjectedScript.swift` | All JS/CSS injected into the page (notification bridge, conversation snapshot, theatre detection, delete-chat flow) |
-| `ChatBubbleController.swift` | Bubble mode controller: chain membership, frame loop (`CADisplayLink`), card, hover, gestures, multi-display follow |
-| `Chain.swift`, `BubbleChipView.swift`, `BubblePanels.swift`, `ConversationPicker.swift`, `BubbleConversation.swift`, `BubbleOverlay.swift` | Bubble-mode parts: chain geometry and springs, one chat head, the card/bubble/tether panels, the conversation list, the snapshot model and avatar cache, overlay level and `ChipMenuLift` |
-| `PlumeTrace.swift` | DEBUG-only multi-display trace log (no-op in release) |
-| `MenuBarItem.swift`, `GlobalHotKey.swift` | Optional menu bar icon with the unread count, and the optional system-wide shortcut (Carbon `RegisterEventHotKey`, no Accessibility permission); both call `AppDelegate.summon` |
-| `BubbleChainSync.swift`, `DisplayHop.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift`, `AttachmentNav.swift`, `PageZoom.swift`, `Summon.swift`, `TrackerRules.swift` | Small pure-logic helpers, unit-tested. `ThreadURL` knows both Messenger sites (`messenger.com/t/…`, `facebook.com/messages/t/…`) and which pages are the chat pages |
-| `Constants.swift` | Home URL, user agent, internal/call/attachment host rules |
-| `Preferences.swift` | `UserDefaults`-backed settings |
-| `Theme.swift` | Design tokens and the `L.t(vi, en)` localisation helper |
-| `ChromeToolbar.swift`, `StateOverlays.swift`, `FeatherView.swift` | Native toolbar, loading/offline/splash overlays, logo |
-| `PDFViewerWindowController.swift` | In-app PDF viewer for attachments |
-| `PopupWindowController.swift` | Real windows for `window.open` (calls start on `about:blank`) |
-| `Updater.swift` | Self-update: GitHub check, download, verification, atomic swap, relaunch; progress panel |
-| `AppVersion.swift`, `UpdateFeed.swift`, `UpdateVerifier.swift` | Pure updater logic (version order, release selection, daily throttle, manifest + Ed25519 checks), unit-tested |
-| `UpdateKeys.swift` | The embedded Ed25519 public key for update archives |
+| `Sources/Plume/` | Executable composition root: `main.swift`, `AppDelegate.swift`, `MainMenuBuilder.swift`, `BubbleModeCoordinator.swift` (+ `MainBubblePageBridge`), `MenuBarItem.swift`, `GlobalHotKey.swift` |
+| `Sources/PlumeCore/` | Pure Foundation/CoreGraphics logic (zero AppKit/WebKit): `Constants.swift`, `Preferences.swift`, `Localization.swift`, `PlumeTrace.swift`, `AppNotifications.swift`, `DelayedLadder.swift`, `ThreadURL.swift`, `ThreadDelete.swift`, `UnreadTitle.swift` (`UnreadTitle`, `UnreadBadge`, `NotificationID`), `AttachmentNav.swift`, `PageZoom.swift`, `TrackerRules.swift`, `Summon.swift`, `BubbleConversation.swift` |
+| `Sources/PlumeUI/` | Shared AppKit/CoreAnimation primitives: `Theme.swift`, `AppKitExtensions.swift`, `PlumeOverlay.swift` (`PlumeOverlay`, `OverlayHost`, `ChipMenuLift`), `OverlayPanel.swift`, `AlertPresenter.swift`, `AvatarCache.swift`, `FeatherView.swift`, `OverlayPrimitives.swift`, `StateOverlays.swift` |
+| `Sources/PlumeWeb/` | `WKWebView` layer & secondary windows: `WebViewController.swift`, `MessengerPageBridge.swift` (all JS evaluation calls), `WebNotificationBridge.swift`, `AttachmentDownloadManager.swift`, `ThreadDeletionCoordinator.swift`, `WebStylingCoordinator.swift`, `ExternalLinkOpener.swift`, `ChromeToolbar.swift`, `PopupWindowController.swift`, `PDFViewerWindowController.swift`, and `InjectedScript/` (`InjectedScript.swift` + `+Notifications`, `+Conversations`, `+ThreadDelete`, `+BubbleCard`, `+Styles`) |
+| `Sources/PlumeBubble/` | Bubble mode: `ChatBubbleController.swift`, `BubblePageBridge.swift`, `BubbleChainState.swift`, `BubbleChainSync.swift`, `BubbleChainPhysics.swift`, `BubbleCardCoordinator.swift`, `BubbleCardLayout.swift`, `BubbleTheaterController.swift`, `BubbleOverlayMonitor.swift`, `BubbleFrameDriver.swift`, `BubbleMenus.swift`, `BubblePanels.swift`, `BubbleChipView.swift`, `ConversationPicker.swift`, `Chain.swift`, `DisplayHop.swift` |
+| `Sources/PlumeUpdater/` | Self-updater: `Updater.swift`, `UpdateInstaller.swift`, `UpdateFailure.swift`, `UpdateProgressWindow.swift`, `AppVersion.swift`, `UpdateFeed.swift`, `UpdateVerifier.swift`, `UpdateKeys.swift` |
 | `CHANGELOG.md`, `docs/RELEASE.md` | Release notes shown in the update prompt; the release procedure (Vietnamese) |
-| `Tests/PlumeTests/` | XCTest; JS that needs no DOM is run in `JavaScriptCore` |
+| `Tests/PlumeTests/` | XCTest across all modules; JS that needs no DOM is run in `JavaScriptCore` |
 
 ## Rules that are easy to break
 

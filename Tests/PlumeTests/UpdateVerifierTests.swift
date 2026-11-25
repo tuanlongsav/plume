@@ -1,6 +1,6 @@
 import CryptoKit
 import XCTest
-@testable import Plume
+@testable import PlumeUpdater
 
 final class UpdateVerifierTests: XCTestCase {
 

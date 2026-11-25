@@ -1,5 +1,5 @@
 import XCTest
-@testable import Plume
+@testable import PlumeBubble
 
 final class DisplayHopTests: XCTestCase {
 
