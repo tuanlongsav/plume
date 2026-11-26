@@ -4,6 +4,12 @@ Mỗi bản phát hành có một mục `## X.Y — YYYY-MM-DD`. `Scripts/releas
 lấy phần dưới tiêu đề đó làm release notes, và app hiện nó trong hộp thoại
 cập nhật — viết cho người dùng, bằng tiếng Việt.
 
+## 1.4 — 2026-11-26
+
+- Sắp xếp lại mã nguồn bên trong thành các phần riêng (cửa sổ chat, bong
+  bóng, cập nhật…) để sửa lỗi và thêm tính năng an toàn hơn. Cách dùng không
+  đổi: đăng nhập, bong bóng và thông báo giữ nguyên như bản 1.3.
+
 ## 1.3 — 2026-11-22
 
 - Plume kiểm tra và tải bản mới từ máy chủ cập nhật ota.htl-8.com (thay cho
